@@ -303,7 +303,9 @@ final class ViewOnlyControl {
     /// A locked view of `id` is on screen: whatever was controlled before
     /// is left behind.
     func didShowLocked(_ id: ConsoleTerminal.ID) {
-        if controlled != id { controlled = nil }
+        // Assigning notifies even when nothing changes, which would rebuild
+        // every detail that reads it.
+        if controlled != nil, controlled != id { controlled = nil }
     }
 
     /// Hosts whose Attach can watch without taking the Pane: herdr-core and
@@ -343,6 +345,7 @@ struct ViewOnlyDetail: View {
     let terminal: TerminalSettings
     let console: ConsoleStore
     var onBack: (() -> Void)? = nil
+    @Environment(\.detailCrossfade) private var detailCrossfade
 
     var body: some View {
         // The caller's copy can be from before a resize; the Console's is current.
@@ -350,7 +353,12 @@ struct ViewOnlyDetail: View {
         DashboardFullScreenView(
             item: item, agent: agent, terminal: terminal, console: console, isLive: true,
             onClose: nil, onTakeControl: { ViewOnlyControl.shared.take(item.id) }, onBack: onBack)
-            .onAppear { ViewOnlyControl.shared.didShowLocked(item.id) }
+            .onAppear {
+                ViewOnlyControl.shared.didShowLocked(item.id)
+                // The switch's dissolve waits for the arriving screen to say
+                // it is in; without this it sits out its whole fallback.
+                detailCrossfade?.contentDidAppear()
+            }
     }
 }
 
