@@ -31,7 +31,19 @@ struct HostServerKey: Hashable, Codable, Sendable {
     /// `Herdr TUI · work`.
     var label: String {
         guard let distinguishingName else { return kind.displayName }
-        return "\(kind.displayName) · \(distinguishingName)"
+        return "\(kind.displayName) · \(Self.shortName(distinguishingName, kind: kind))"
+    }
+
+    /// Personal build. An ephemeral tmux socket (`EphemeralTmuxServerSweeper`)
+    /// is `<prefix><long id>`; the id's first five characters tell it from its
+    /// siblings and the rest only crowds the row.
+    static func shortName(
+        _ name: String, kind: ServerKind, prefixes: [String] = EphemeralTmuxServerSweeper.socketPrefixes
+    ) -> String {
+        guard kind == .tmux, let prefix = EphemeralTmuxServerSweeper.prefix(of: name, among: prefixes) else {
+            return name
+        }
+        return String(name.dropFirst(prefix.count).prefix(5))
     }
 }
 

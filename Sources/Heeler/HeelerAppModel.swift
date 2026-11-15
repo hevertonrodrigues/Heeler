@@ -45,6 +45,8 @@ final class HeelerAppModel {
     let liveActivities: HostLiveActivityCoordinator
     /// What a confirmed Host removal cleans up beyond the catalog (#414).
     let hostRemoval: HostRemovalDependencies
+    /// Personal build: drops ephemeral tmux Servers once they end.
+    private var ephemeralSweeper: EphemeralTmuxServerSweeper?
     let hostOnboarding: HostOnboardingDependencies
     /// Which Hosts hold an older Plugin or Helper than this app carries, and
     /// the updates that bring them up (ADR 0048).
@@ -210,6 +212,10 @@ final class HeelerAppModel {
     func start() {
         guard !isStarted else { return }
         isStarted = true
+
+        let sweeper = EphemeralTmuxServerSweeper(hostStore: hostStore, console: console, dependencies: hostRemoval)
+        ephemeralSweeper = sweeper
+        sweeper.start()
 
         // The banner store diffs the Agent list for foreground Blocked/Done
         // transitions (#77); both it and the Live Activities take the
