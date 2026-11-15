@@ -130,7 +130,7 @@ enum ServerKind: String, Codable, Hashable, Sendable {
     var displayName: String {
         switch self {
         case .herdrTUI: String(localized: "Herdr TUI")
-        case .herdrCore: "herdr-core"
+        case .herdrCore: "hc"  // personal build: short, for row labels like "my-mac · hc"
         case .tmux: "tmux"
         case .unconfirmed: String(localized: "Not confirmed")
         }
