@@ -53,7 +53,7 @@ final class EphemeralTmuxServerSweeper {
     func sweep() async -> [Host.ID] {
         var notRunning: Set<Host.ID> = []
         for host in hostStore.hosts where Self.isEphemeral(host) {
-            if case .reconnecting(_, _, .tmuxServerNotRunning) = console.hostStatuses[host.id] {
+            if console.hostStatuses[host.id]?.findsTmuxServerNotRunning == true {
                 notRunning.insert(host.id)
             }
         }
@@ -73,5 +73,22 @@ final class EphemeralTmuxServerSweeper {
             if !hostStore.hosts.contains(where: { $0.id == id }) { removed.append(id) }
         }
         return removed
+    }
+}
+
+extension EventsSessionStatus {
+    /// Personal build. A tmux Host whose run stopped because its server was
+    /// closed (`TmuxHostSession.notRunningLookLimit`): it reads "Not running",
+    /// quietly, rather than Can't Connect.
+    var isStoppedTmuxServer: Bool {
+        if case .failed(.tmuxServerNotRunning) = self { true } else { false }
+    }
+
+    /// Still looking for the tmux server, or stopped after it found none.
+    var findsTmuxServerNotRunning: Bool {
+        switch self {
+        case .reconnecting(_, _, .tmuxServerNotRunning), .failed(.tmuxServerNotRunning): true
+        default: false
+        }
     }
 }

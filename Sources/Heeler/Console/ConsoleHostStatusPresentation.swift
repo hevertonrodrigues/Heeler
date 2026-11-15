@@ -17,6 +17,7 @@ struct ConsoleHostStatusPresentation: Equatable, Identifiable {
     /// counts Hosts per condition in whole localized phrases.
     enum Condition: Equatable {
         case paused
+        case notRunning
         case connecting
         case reconnecting
         case cannotConnect
@@ -28,6 +29,7 @@ struct ConsoleHostStatusPresentation: Equatable, Identifiable {
         var title: String {
             switch self {
             case .paused: String(localized: "Paused")
+            case .notRunning: String(localized: "Not running")
             case .connecting: String(localized: "Connecting…")
             case .reconnecting: String(localized: "Reconnecting…")
             case .cannotConnect: String(localized: "Can't connect")
@@ -41,6 +43,7 @@ struct ConsoleHostStatusPresentation: Equatable, Identifiable {
         func countText(_ count: Int) -> String {
             switch self {
             case .paused: String(localized: "\(count) paused")
+            case .notRunning: String(localized: "\(count) not running")
             case .connecting: String(localized: "\(count) connecting")
             case .reconnecting: String(localized: "\(count) reconnecting")
             case .cannotConnect: String(localized: "\(count) can't connect")
@@ -116,6 +119,12 @@ struct ConsoleHostStatusPresentation: Equatable, Identifiable {
             severity = .warning
             navigates = true
             (tone, condition) = (.reconnecting, .reconnecting)
+        case .failed(.tmuxServerNotRunning):
+            message = String(localized: "No tmux server is running on \(name).")
+            systemImage = "stop.circle"
+            severity = .informational
+            navigates = true
+            (tone, condition) = (.paused, .notRunning)
         case .failed(let failure):
             (message, systemImage, severity, navigates) = Self.failed(
                 failure, hostName: name, usesHerdrEndpoint: usesHerdrEndpoint)

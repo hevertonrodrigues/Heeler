@@ -1019,6 +1019,11 @@ struct HostRowPresentation: Equatable {
         isDialing = problem?.isDialing ?? false
         trailing = if case .connected = status { chip.title } else { nil }
         switch status {
+        case .failed(.tmuxServerNotRunning):
+            group = .notConnected
+            detail = problem?.summary ?? chip.title
+            isProblem = false
+            offersRetry = canRetry
         case .failed:
             group = .cannotConnect
             detail = problem?.summary ?? chip.title
@@ -1156,6 +1161,10 @@ struct HostConnectionPresentation: Equatable {
                 accessibilityLabel = String(localized: "Connecting")
                 tone = .pending
             }
+        case .failed(.tmuxServerNotRunning):
+            title = String(localized: "Not running")
+            accessibilityLabel = String(localized: "tmux server not running")
+            tone = .paused
         case .failed, .ended:
             title = String(localized: "Unavailable")
             accessibilityLabel = String(localized: "Unavailable")

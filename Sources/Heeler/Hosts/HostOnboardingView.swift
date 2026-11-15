@@ -1024,7 +1024,9 @@ enum HostOnboardingCoreFollow {
 
     static func reading(_ status: EventsSessionStatus?) -> Reading {
         switch status {
-        case .reconnecting(_, _, .herdrCoreNotRunning), .reconnecting(_, _, .tmuxServerNotRunning): .notRunning
+        case .reconnecting(_, _, .herdrCoreNotRunning), .reconnecting(_, _, .tmuxServerNotRunning),
+            .failed(.tmuxServerNotRunning):
+            .notRunning
         case .connected: .connected
         default: .other
         }
@@ -1052,7 +1054,8 @@ enum HostOnboardingCoreFollow {
     static func action(
         afterCoreStart coreStart: CoreStartState, reportPassed: Bool, status: EventsSessionStatus?
     ) -> Action {
-        guard reportPassed, case .reconnecting = status else { return .none }
+        let waits = if case .reconnecting = status { true } else { status?.isStoppedTmuxServer == true }
+        guard reportPassed, waits else { return .none }
         switch coreStart {
         case .started, .alreadyRunning: return .wakeConsole
         case .idle, .running, .failed: return .none

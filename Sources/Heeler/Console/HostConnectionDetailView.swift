@@ -45,8 +45,9 @@ struct HostConnectionDetailPresentation: Equatable {
             canStop = true
         case .failed(let stopped):
             failure = stopped
-            title = String(localized: "Can't Connect")
-            tone = .unavailable
+            let closed = if case .tmuxServerNotRunning = stopped { true } else { false }
+            title = closed ? String(localized: "Not Running") : String(localized: "Can't Connect")
+            tone = closed ? .paused : .unavailable
             attempt = nil
             isDialing = false
             canStop = false

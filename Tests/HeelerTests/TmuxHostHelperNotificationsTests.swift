@@ -749,7 +749,9 @@ struct TmuxHostHelperNotificationsTests {
         let probesBefore = await tmux.helper.steps.filter { $0 == .probe }.count
         let attemptsBefore = attempts.withLock { $0 }
 
-        try await waitUntil("twenty more retries") { attempts.withLock { $0 } >= attemptsBefore + 20 }
+        // Personal build: the run stops after a few looks instead of retrying forever.
+        try await waitUntil("the run to stop") { console.hostStatuses[host.id] == .failed(Self.stoppedServer) }
+        #expect(attempts.withLock { $0 } <= attemptsBefore + TmuxHostSession.notRunningLookLimit)
 
         #expect(await tmux.helper.steps.filter { $0 == .probe }.count <= probesBefore + 1)
     }

@@ -116,6 +116,8 @@ struct ConsoleHostSectionHeaderPresentation: Equatable {
                 return HostReadiness(text: String(localized: "Unavailable"), tone: .unavailable)
             }
             return HostReadiness(text: String(localized: "Connecting…"), tone: .pending)
+        case .failed(.tmuxServerNotRunning):
+            return HostReadiness(text: String(localized: "Not running"), tone: .paused)
         case .failed, .ended:
             return HostReadiness(text: String(localized: "Unavailable"), tone: .unavailable)
         case .suspended:

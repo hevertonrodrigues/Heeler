@@ -3313,7 +3313,7 @@ extension ConsoleStore: NotificationTransportProvider {
         switch hostStatuses[hostID] {
         case .connected: true
         case .reconnecting(_, _, .herdrCoreNotRunning): coreHost(hostID) != nil
-        case .reconnecting(_, _, .tmuxServerNotRunning): tmuxHost(hostID) != nil
+        case .reconnecting(_, _, .tmuxServerNotRunning), .failed(.tmuxServerNotRunning): tmuxHost(hostID) != nil
         default: false
         }
     }

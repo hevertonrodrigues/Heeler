@@ -77,8 +77,13 @@ struct TmuxConsoleTests {
     }
 
     private func isNotRunning(_ status: EventsSessionStatus?) -> Bool {
-        if case .reconnecting(_, _, .tmuxServerNotRunning(socketName: "default")) = status { return true }
-        return false
+        switch status {
+        case .reconnecting(_, _, .tmuxServerNotRunning(socketName: "default")),
+            .failed(.tmuxServerNotRunning(socketName: "default")):
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: Connected
@@ -136,7 +141,7 @@ struct TmuxConsoleTests {
 
     // MARK: No server, an old tmux, no tmux
 
-    @Test func aHostWithNoServerKeepsAskingOnOneConnectionAndConnectsOnceOneStarts() async throws {
+    @Test func aHostWithNoServerAsksOnOneConnectionAndConnectsOnRetryOnceOneStarts() async throws {
         let tmux = ScriptedTmuxHost(sockets: [])
         let console = await started(tmux)
         let store = console.store
@@ -152,10 +157,14 @@ struct TmuxConsoleTests {
         #expect(!log.contains("close"))
         #expect(console.dials.value == 1)
 
+        // Personal build: a few looks that find none stop the run.
+        try await waitUntil("the run to stop") {
+            store.hostStatuses[host.id] == .failed(.tmuxServerNotRunning(socketName: "default"))
+        }
         await tmux.startServer()
+        await store.retryHost(host.id)
 
         try await waitUntil("the started server") { store.hostStatuses[host.id] == .connected }
-        #expect(console.dials.value == 1)
         store.setHosts([])
     }
 
@@ -170,6 +179,8 @@ struct TmuxConsoleTests {
         #expect(store.hostsAwaitingSnapshot.contains(host.id))
 
         await tmux.startServer(instance: TmuxServerInstance(pid: 9001, startTime: 1_800_000_000))
+        // Personal build: a run that already stopped after its few looks needs a Retry.
+        if case .failed = store.hostStatuses[host.id] { await store.retryHost(host.id) }
         try await waitUntil("the new server") { store.hostStatuses[host.id] == .connected }
         #expect(store.tmuxServer(on: host.id)?.instance == TmuxServerInstance(pid: 9001, startTime: 1_800_000_000))
         store.setHosts([])

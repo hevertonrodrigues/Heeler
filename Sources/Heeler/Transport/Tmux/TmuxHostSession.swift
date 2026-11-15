@@ -96,6 +96,11 @@ actor TmuxHostSession {
     private var runTask: Task<Void, Never>?
     private var waitSleep: Task<Void, any Error>?
     private var immediateAskRequested = false
+    /// Personal build: looks in a row that found no server running, and how
+    /// many stop the run as `.failed(.tmuxServerNotRunning)`.
+    private var notRunningLooks = 0
+    static let notRunningLookLimit = 3
+    private var lastStatus: EventsSessionStatus?
     private var lifecycleTransition: Task<Void, Never>?
     /// Attaches waiting for a server to answer on a connection.
     private var attachWaiters: [AttachWaiter] = []
@@ -302,6 +307,7 @@ actor TmuxHostSession {
         }
         attachFailure = nil
         immediateAskRequested = false
+        notRunningLooks = 0
         activationGeneration &+= 1
         let generation = activationGeneration
         yieldStatus(.connecting)
@@ -327,6 +333,7 @@ actor TmuxHostSession {
     }
 
     private func startRun() {
+        notRunningLooks = 0
         activationGeneration &+= 1
         let generation = activationGeneration
         yieldStatus(.connecting)
@@ -343,6 +350,21 @@ actor TmuxHostSession {
 
     private func stopConnecting() async {
         guard liveServer == nil else { return }
+        // Personal build: stopping a server that was found not running leaves
+        // it stopped, as the run itself would after a few looks, not paused.
+        if phase == .active, case .reconnecting(_, _, .tmuxServerNotRunning(let socket))? = lastStatus {
+            activationGeneration &+= 1
+            waitSleep?.cancel()
+            waitSleep = nil
+            runTask?.cancel()
+            runTask = nil
+            notRunningLooks = 0
+            let failure = TransportError.tmuxServerNotRunning(socketName: socket)
+            attachFailure = failure
+            failAttachWaiters(failure)
+            yieldStatus(.failed(failure))
+            return
+        }
         await deactivate()
     }
 
@@ -357,6 +379,7 @@ actor TmuxHostSession {
     }
 
     private func yieldStatus(_ status: EventsSessionStatus) {
+        lastStatus = status
         if status != .connected {
             stopInventory()
             liveServer = nil
@@ -402,6 +425,7 @@ actor TmuxHostSession {
                 switch asked {
                 case .success(let server):
                     attempt = 0
+                    notRunningLooks = 0
                     announce(server, latency: started.duration(to: .now), routeID: transport.routeID)
                     followInventory(on: transport, generation: generation)
                     try await waitForNextAsk()
@@ -414,7 +438,12 @@ actor TmuxHostSession {
                 failure = Self.transportFailure(error)
             }
             if failure == .timedOut { transportSuspect = true }
-            guard failure.isRetryable else {
+            if case .tmuxServerNotRunning = failure { notRunningLooks += 1 } else { notRunningLooks = 0 }
+            // Personal build: a server found not running on a few looks in a
+            // row was closed, so the run stops there instead of reconnecting
+            // forever. A foreground return, Retry or Heeler's own launch asks again.
+            guard failure.isRetryable, notRunningLooks < Self.notRunningLookLimit else {
+                notRunningLooks = 0
                 attachFailure = failure
                 failAttachWaiters(failure)
                 yieldStatus(.failed(failure))

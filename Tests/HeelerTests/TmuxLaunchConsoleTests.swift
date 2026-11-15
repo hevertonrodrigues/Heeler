@@ -59,8 +59,13 @@ struct TmuxLaunchConsoleTests {
     }
 
     private func isNotRunning(_ status: EventsSessionStatus?) -> Bool {
-        if case .reconnecting(_, _, .tmuxServerNotRunning(socketName: "default")) = status { return true }
-        return false
+        switch status {
+        case .reconnecting(_, _, .tmuxServerNotRunning(socketName: "default")),
+            .failed(.tmuxServerNotRunning(socketName: "default")):
+            return true
+        default:
+            return false
+        }
     }
 
     /// The commands the user asked for. An environment read can follow one that
