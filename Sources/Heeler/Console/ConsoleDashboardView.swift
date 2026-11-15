@@ -19,6 +19,33 @@ struct ConsoleDashboardView: View {
         }
     }
 
+    /// How the cells are laid out: the free-form grid, or fixed tiles of one
+    /// size (3 × 3 to a screen; on a phone 1 × 3 upright, 3 × 1 sideways),
+    /// each showing its Pane's bottom.
+    enum Style: String, CaseIterable, Identifiable {
+        case freeForm, fixed
+        var id: Self { self }
+        var title: String {
+            switch self {
+            case .freeForm: String(localized: "Free-Form")
+            case .fixed: String(localized: "Fixed Tiles")
+            }
+        }
+        var systemImage: String {
+            switch self {
+            case .freeForm: "rectangle.3.group"
+            case .fixed: "square.grid.3x3"
+            }
+        }
+    }
+
+    /// Tiles per row and rows per screen in the fixed style: 3 × 3, with one
+    /// column where the screen is too narrow (an upright phone) and one row
+    /// where it is too short (a phone on its side).
+    static func fixedGrid(for viewport: CGSize) -> (columns: Int, rows: Int) {
+        (viewport.width < DashboardGridMetrics.minimumGridWidth ? 1 : 3, viewport.height < 480 ? 1 : 3)
+    }
+
     /// Live Attaches a Host's budget (5, `TerminalRetentionBudget`) gives the
     /// Dashboard, leaving one for opening an Agent or Terminal elsewhere.
     static let liveCellsPerHost = 4
@@ -33,6 +60,7 @@ struct ConsoleDashboardView: View {
     var onTakeControl: (ConsoleTerminal) -> Void = { _ in }
 
     @AppStorage("dashboard.filter") private var filter = Filter.all
+    @AppStorage("dashboard.style") private var style = Style.freeForm
     @State private var interaction: Interaction?
     @State private var attempts: [ConsoleTerminal.ID: Int] = [:]
     /// The cell open in the full-screen viewer.
@@ -54,7 +82,9 @@ struct ConsoleDashboardView: View {
     var body: some View {
         NavigationStack {
             GeometryReader { proxy in
-                content(metrics: DashboardGridMetrics(width: max(proxy.size.width - Self.padding * 2, 1)))
+                content(
+                    metrics: DashboardGridMetrics(width: max(proxy.size.width - Self.padding * 2, 1)),
+                    viewport: proxy.size)
             }
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.inline)
@@ -96,7 +126,7 @@ struct ConsoleDashboardView: View {
     private var settle: Animation? { reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86) }
 
     @ViewBuilder
-    private func content(metrics: DashboardGridMetrics) -> some View {
+    private func content(metrics: DashboardGridMetrics, viewport: CGSize) -> some View {
         let shown = shownTerminals
         if shown.isEmpty {
             ContentUnavailableView(
@@ -108,7 +138,9 @@ struct ConsoleDashboardView: View {
             let preview = preview(base: base, metrics: metrics)
             let modes = cellModes(order: shown.map(\.id).sorted { (base[$0]?.y ?? 0, base[$0]?.x ?? 0) < (base[$1]?.y ?? 0, base[$1]?.x ?? 0) })
             ScrollView {
-                if metrics.stacks {
+                if style == .fixed {
+                    fixed(shown, positions: base, modes: modes, viewport: viewport)
+                } else if metrics.stacks {
                     stacked(shown, positions: base, modes: modes, metrics: metrics)
                 } else {
                     grid(shown, preview: preview, modes: modes, metrics: metrics)
@@ -211,6 +243,41 @@ struct ConsoleDashboardView: View {
         .padding(Self.padding)
     }
 
+    /// Fixed tiles in grid order, all one size, a screenful at a time (nine
+    /// on an iPad, three on a phone), more scrolling the page. Each tile
+    /// shows its Pane at the tile's width, from the bottom.
+    private func fixed(
+        _ shown: [ConsoleTerminal], positions: [ConsoleTerminal.ID: DashboardGridRect],
+        modes: [ConsoleTerminal.ID: CellMode], viewport: CGSize
+    ) -> some View {
+        let ordered = shown.sorted {
+            let lhs = positions[$0.id], rhs = positions[$1.id]
+            return (lhs?.y ?? 0, lhs?.x ?? 0) < (rhs?.y ?? 0, rhs?.x ?? 0)
+        }
+        let grid = Self.fixedGrid(for: viewport)
+        let count = grid.columns
+        let gap = DashboardGridMetrics.gap
+        let tile = CGSize(
+            width: max((viewport.width - Self.padding * 2 - gap * CGFloat(count - 1)) / CGFloat(count), 1),
+            height: max((viewport.height - Self.padding * 2 - gap * CGFloat(grid.rows - 1)) / CGFloat(grid.rows), 120))
+        let rows = stride(from: 0, to: ordered.count, by: count).map { Array(ordered[$0..<min($0 + count, ordered.count)]) }
+        return VStack(alignment: .leading, spacing: gap) {
+            ForEach(rows, id: \.first?.id) { row in
+                HStack(spacing: gap) {
+                    ForEach(row) { item in
+                        let rect = positions[item.id] ?? DashboardGridRect(x: 0, y: 0, w: 4, h: DashboardGrid.defaultHeight)
+                        cell(
+                            item, mode: modes[item.id] ?? .snapshot(note: ""), rect: rect, isActive: false,
+                            interactive: false, fit: .widthFromBottom, metrics: DashboardGridMetrics(width: tile.width))
+                            .frame(width: tile.width, height: tile.height)
+                    }
+                }
+            }
+        }
+        .padding(Self.padding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // MARK: Cells
 
     private enum CellMode {
@@ -239,13 +306,13 @@ struct ConsoleDashboardView: View {
 
     private func cell(
         _ item: ConsoleTerminal, mode: CellMode, rect: DashboardGridRect, isActive: Bool, interactive: Bool = true,
-        metrics: DashboardGridMetrics
+        fit: DashboardLiveTerminal.Fit = .whole, metrics: DashboardGridMetrics
     ) -> some View {
         let agent = agent(for: item)
         return VStack(spacing: 0) {
             header(item, agent: agent, rect: rect, interactive: interactive, metrics: metrics)
             Divider()
-            cellBody(item, mode: mode)
+            cellBody(item, mode: mode, fit: fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
                 .contentShape(Rectangle())
@@ -267,7 +334,7 @@ struct ConsoleDashboardView: View {
     }
 
     @ViewBuilder
-    private func cellBody(_ item: ConsoleTerminal, mode: CellMode) -> some View {
+    private func cellBody(_ item: ConsoleTerminal, mode: CellMode, fit: DashboardLiveTerminal.Fit) -> some View {
         if scenePhase == .background {
             DashboardTileMessage(text: String(localized: "Paused"), showsProgress: false)
         } else {
@@ -277,7 +344,7 @@ struct ConsoleDashboardView: View {
                 let runner = console.terminalRunner(for: item.hostID)
                 let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
                 DashboardLiveTerminal(
-                    terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows,
+                    terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows, fit: fit,
                     onReconnect: { attempts[item.id, default: 0] += 1 },
                     makeStore: {
                         AttachTerminalStore(
@@ -407,6 +474,10 @@ struct ConsoleDashboardView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {
+                Picker("Layout", selection: $style) {
+                    ForEach(Style.allCases) { Label($0.title, systemImage: $0.systemImage).tag($0) }
+                }
+                Divider()
                 Button("Reset Layout", systemImage: "arrow.counterclockwise", role: .destructive) {
                     withAnimation(settle) { layout.reset() }
                 }
