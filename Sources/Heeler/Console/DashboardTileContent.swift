@@ -31,6 +31,10 @@ struct DashboardLiveTerminal: View {
     /// The fixed size the terminal lays out at, converging on the remote grid.
     @State private var canvas: CGSize?
     @State private var fitPasses = 0
+    /// A remote resize repaints on a fresh Attach once it settles; the
+    /// surface is remade with it so the new one reports its size and starts.
+    @State private var storeGeneration = 0
+    @State private var settleTask: Task<Void, Never>?
     @Environment(\.themeAppearance) private var themeAppearance
 
     private struct GridSize: Equatable {
@@ -72,6 +76,7 @@ struct DashboardLiveTerminal: View {
                         }
                     let drawn = CGSize(width: canvas.width * scale, height: canvas.height * scale)
                     screen(store)
+                        .id(storeGeneration)
                         .frame(width: canvas.width, height: canvas.height)
                         .scaleEffect(scale, anchor: .topLeading)
                         .frame(width: drawn.width, height: drawn.height, alignment: .topLeading)
@@ -90,10 +95,21 @@ struct DashboardLiveTerminal: View {
             if store == nil { store = makeStore() }
         }
         .onChange(of: remoteGrid) { _, _ in
-            // The remote Pane resized: converge on its new grid.
+            // The remote Pane resized: converge on its new grid, and once the
+            // drag settles reattach, so the first paint lands at that size
+            // instead of output drawn for the old one.
             fitPasses = 0
+            settleTask?.cancel()
+            settleTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let previous = store else { return }
+                store = makeStore()
+                storeGeneration += 1
+                await previous.stop()
+            }
         }
         .onDisappear {
+            settleTask?.cancel()
             guard let store else { return }
             Task { await store.stop() }
         }
@@ -289,6 +305,8 @@ struct ViewOnlyDetail: View {
     var onBack: (() -> Void)? = nil
 
     var body: some View {
+        // The caller's copy can be from before a resize; the Console's is current.
+        let item = console.terminals.first { $0.id == self.item.id } ?? self.item
         DashboardFullScreenView(
             item: item, agent: agent, terminal: terminal, console: console, isLive: true,
             onClose: nil, onTakeControl: { ViewOnlyControl.shared.take(item.id) }, onBack: onBack)
