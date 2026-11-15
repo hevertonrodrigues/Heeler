@@ -32,6 +32,8 @@ struct ConsoleDashboardView: View {
     @AppStorage("dashboard.filter") private var filter = Filter.all
     @State private var interaction: Interaction?
     @State private var attempts: [ConsoleTerminal.ID: Int] = [:]
+    /// The cell open in the full-screen viewer.
+    @State private var viewing: DashboardViewing?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -56,6 +58,20 @@ struct ConsoleDashboardView: View {
             .toolbar { toolbar }
             .background(Color(uiColor: .systemGroupedBackground))
         }
+        .fullScreenCover(item: $viewing) { viewing in
+            if let item = console.terminals.first(where: { $0.id == viewing.id }) {
+                DashboardFullScreenView(
+                    item: item, agent: agent(for: item), terminal: terminal, console: console,
+                    isLive: hosts.consoleHosts.first { $0.id == item.hostID }?.serverKind != .herdrTUI,
+                    onClose: { self.viewing = nil })
+            } else {
+                DashboardFullScreenGone { self.viewing = nil }
+            }
+        }
+    }
+
+    private func agent(for item: ConsoleTerminal) -> ConsoleAgent? {
+        item.agentID.flatMap { id in console.agents.first { $0.id == id } }
     }
 
     // MARK: Grid
@@ -218,13 +234,17 @@ struct ConsoleDashboardView: View {
         _ item: ConsoleTerminal, mode: CellMode, rect: DashboardGridRect, isActive: Bool, interactive: Bool = true,
         metrics: DashboardGridMetrics
     ) -> some View {
-        let agent = item.agentID.flatMap { id in console.agents.first { $0.id == id } }
+        let agent = agent(for: item)
         return VStack(spacing: 0) {
             header(item, agent: agent, rect: rect, interactive: interactive, metrics: metrics)
             Divider()
             cellBody(item, mode: mode)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
+                .contentShape(Rectangle())
+                .onTapGesture { viewing = DashboardViewing(id: item.id) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Opens full screen")
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -275,18 +295,14 @@ struct ConsoleDashboardView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            if let agent {
-                Circle()
-                    .fill(Color(uiColor: agent.agent.status.inkUIColor))
-                    .frame(width: 8, height: 8)
-            } else {
-                Image(systemName: "apple.terminal")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            DashboardStatusMark(agent: agent)
             Text(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
+            if let agent, agent.agent.status.displayTitle != nil {
+                AgentStatusBadge(status: agent.agent.status)
+                    .fixedSize()
+            }
             Text([item.hostName, item.workspaceLabel].compactMap(\.self).joined(separator: " · "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -298,8 +314,8 @@ struct ConsoleDashboardView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
+        .padding(.horizontal, 10)
+        .frame(height: 38)
         .contentShape(Rectangle())
         .hoverEffect(.highlight)
         .highPriorityGesture(interactive ? moveGesture(for: item.id, rect: rect, metrics: metrics) : nil)
@@ -403,5 +419,127 @@ private struct DashboardResizeGrip: Shape {
         path.move(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.75))
         path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.75, y: rect.maxY))
         return path
+    }
+}
+
+struct DashboardViewing: Identifiable, Equatable {
+    let id: ConsoleTerminal.ID
+}
+
+/// The status the Agents list shows, at header size: the program's mark in
+/// its status ring (turning while it works). A shell Terminal has no status.
+struct DashboardStatusMark: View {
+    let agent: ConsoleAgent?
+
+    var body: some View {
+        if let agent {
+            AgentStatusAvatar(mark: AgentKindMark(kind: agent.agent.kind), status: agent.agent.status, diameter: 24)
+                .accessibilityLabel(Text(verbatim: agent.agent.status.displayTitle ?? ""))
+        } else {
+            Image(systemName: "apple.terminal")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+        }
+    }
+}
+
+/// One cell full screen, still watch-only: the Pane at the screen's width,
+/// its bottom in view when it is taller than the screen, centered on black
+/// when shorter. Its own observe Attach, so the cell keeps drawing behind it.
+struct DashboardFullScreenView: View {
+    let item: ConsoleTerminal
+    let agent: ConsoleAgent?
+    let terminal: TerminalSettings
+    let console: ConsoleStore
+    let isLive: Bool
+    let onClose: () -> Void
+
+    @State private var attempt = 0
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.ignoresSafeArea()
+            Group {
+                if isLive {
+                    let generation = console.hostConnectionGenerations[item.hostID]
+                    let runner = console.terminalRunner(for: item.hostID)
+                    let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
+                    DashboardLiveTerminal(
+                        terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows,
+                        fit: .widthFromBottom, onReconnect: { attempt += 1 },
+                        makeStore: {
+                            AttachTerminalStore(
+                                target: target, takeover: false, viewer: .observe, isViewed: true,
+                                transportGeneration: generation, runTerminal: runner)
+                        })
+                    .id("\(generation ?? 0)|\(attempt)")
+                } else {
+                    DashboardSnapshotTerminal(
+                        console: console, hostID: item.hostID, paneID: item.paneID, isAgent: item.isAgent,
+                        note: String(localized: "Preview"))
+                }
+            }
+            .padding(.top, 52)
+            bar
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden()
+        .gesture(
+            DragGesture(minimumDistance: 30).onEnded { value in
+                if value.translation.height > 120, abs(value.translation.width) < 80 { onClose() }
+            })
+    }
+
+    private var bar: some View {
+        HStack(spacing: 10) {
+            DashboardStatusMark(agent: agent)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text([item.hostName, item.workspaceLabel].compactMap(\.self).joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if let agent, agent.agent.status.displayTitle != nil {
+                AgentStatusBadge(status: agent.agent.status)
+                    .fixedSize()
+            }
+            Spacer(minLength: 0)
+            if let columns = item.gridColumns, let rows = item.gridRows {
+                Text(verbatim: "\(columns)×\(rows)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            Button("Close", systemImage: "xmark", action: onClose)
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: 36, height: 36)
+                .background(.regularMaterial, in: Circle())
+                .accessibilityIdentifier("dashboard.fullscreen.close")
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 52)
+        .background(.black)
+    }
+}
+
+/// The Pane closed while it was full screen.
+struct DashboardFullScreenGone: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 12) {
+                Text("This Pane has closed.")
+                    .foregroundStyle(.secondary)
+                Button("Close", action: onClose)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }

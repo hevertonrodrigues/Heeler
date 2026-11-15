@@ -10,6 +10,16 @@ import SwiftUI
 /// is then a zoom: the terminal never reflows, so the Pane looks as it does on
 /// the machine. The canvas follows the remote Pane when that one resizes.
 struct DashboardLiveTerminal: View {
+    /// How the fixed canvas meets the space it is given.
+    enum Fit {
+        /// Whole Pane visible, centered: a Dashboard cell.
+        case whole
+        /// Full width; a taller Pane shows its bottom, a shorter one sits
+        /// centered with the rest left dark: the full-screen viewer.
+        case widthFromBottom
+    }
+
+    var fit: Fit = .whole
     let terminal: TerminalSettings
     let remoteColumns: Int?
     let remoteRows: Int?
@@ -33,8 +43,9 @@ struct DashboardLiveTerminal: View {
 
     init(
         terminal: TerminalSettings, remoteColumns: Int?, remoteRows: Int?,
-        onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
+        fit: Fit = .whole, onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
     ) {
+        self.fit = fit
         self.terminal = terminal
         self.remoteColumns = remoteColumns
         self.remoteRows = remoteRows
@@ -52,13 +63,21 @@ struct DashboardLiveTerminal: View {
             if let store {
                 if let remoteGrid {
                     let canvas = canvas ?? Self.estimatedCanvas(for: remoteGrid)
-                    let scale = min(
-                        proxy.size.width / canvas.width, proxy.size.height / canvas.height, Self.maximumScale)
+                    let scale =
+                        switch fit {
+                        case .whole:
+                            min(proxy.size.width / canvas.width, proxy.size.height / canvas.height, Self.maximumScale)
+                        case .widthFromBottom:
+                            proxy.size.width / canvas.width
+                        }
+                    let drawn = CGSize(width: canvas.width * scale, height: canvas.height * scale)
                     screen(store)
                         .frame(width: canvas.width, height: canvas.height)
                         .scaleEffect(scale, anchor: .topLeading)
-                        .frame(width: canvas.width * scale, height: canvas.height * scale, alignment: .topLeading)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .frame(width: drawn.width, height: drawn.height, alignment: .topLeading)
+                        .frame(
+                            width: proxy.size.width, height: proxy.size.height,
+                            alignment: fit == .widthFromBottom && drawn.height > proxy.size.height ? .bottom : .center)
                 } else {
                     screen(store)
                 }
