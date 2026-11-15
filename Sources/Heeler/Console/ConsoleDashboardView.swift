@@ -495,7 +495,12 @@ struct DashboardFullScreenView: View {
                     let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
                     DashboardLiveTerminal(
                         terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows,
-                        fit: .widthFromBottom, onReconnect: { attempt += 1 },
+                        fit: .widthFromBottom,
+                        // In place it is a locked detail: pooled, so going back is instant.
+                        pooled: onClose == nil
+                            ? ViewOnlyPool.shared.state(for: .init(id: item.id, generation: generation, attempt: attempt))
+                            : nil,
+                        onReconnect: { attempt += 1 },
                         makeStore: {
                             AttachTerminalStore(
                                 target: target, takeover: false, viewer: .observe, isViewed: true,

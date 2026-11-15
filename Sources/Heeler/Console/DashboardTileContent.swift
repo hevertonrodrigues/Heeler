@@ -26,15 +26,12 @@ struct DashboardLiveTerminal: View {
     /// Recreates the Attach; a `retry()` would come back interactive.
     let onReconnect: () -> Void
 
-    @State private var store: AttachTerminalStore?
     private let makeStore: () -> AttachTerminalStore
-    /// The fixed size the terminal lays out at, converging on the remote grid.
-    @State private var canvas: CGSize?
-    @State private var fitPasses = 0
-    /// A remote resize repaints on a fresh Attach once it settles; the
-    /// surface is remade with it so the new one reports its size and starts.
-    @State private var storeGeneration = 0
-    @State private var settleTask: Task<Void, Never>?
+    /// A locked detail's state from `ViewOnlyPool`, which outlives this view
+    /// so going back to it is instant; nil keeps it here, for a cell.
+    private let pooled: LiveTerminalState?
+    @State private var ownState = LiveTerminalState()
+    private var state: LiveTerminalState { pooled ?? ownState }
     @Environment(\.themeAppearance) private var themeAppearance
 
     private struct GridSize: Equatable {
@@ -47,8 +44,10 @@ struct DashboardLiveTerminal: View {
 
     init(
         terminal: TerminalSettings, remoteColumns: Int?, remoteRows: Int?,
-        fit: Fit = .whole, onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
+        fit: Fit = .whole, pooled: LiveTerminalState? = nil,
+        onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
     ) {
+        self.pooled = pooled
         self.fit = fit
         self.terminal = terminal
         self.remoteColumns = remoteColumns
@@ -64,9 +63,9 @@ struct DashboardLiveTerminal: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if let store {
+            if let store = state.store {
                 if let remoteGrid {
-                    let canvas = canvas ?? estimatedCanvas(for: remoteGrid)
+                    let canvas = state.canvas ?? estimatedCanvas(for: remoteGrid)
                     let scale =
                         switch fit {
                         case .whole:
@@ -76,7 +75,7 @@ struct DashboardLiveTerminal: View {
                         }
                     let drawn = CGSize(width: canvas.width * scale, height: canvas.height * scale)
                     screen(store)
-                        .id(storeGeneration)
+                        .id(state.storeGeneration)
                         .frame(width: canvas.width, height: canvas.height)
                         .scaleEffect(scale, anchor: .topLeading)
                         .frame(width: drawn.width, height: drawn.height, alignment: .topLeading)
@@ -92,31 +91,26 @@ struct DashboardLiveTerminal: View {
         .allowsHitTesting(false)
         .overlay { statusOverlay }
         .onAppear {
-            if store == nil { store = makeStore() }
+            if state.store == nil { state.store = makeStore() }
+            state.watch(remoteGrid.map { "\($0.columns)x\($0.rows)" }, makeStore: makeStore)
         }
-        .onChange(of: remoteGrid) { _, _ in
+        .onChange(of: remoteGrid) { _, grid in
             // The remote Pane resized: converge on its new grid, and once the
             // drag settles reattach, so the first paint lands at that size
             // instead of output drawn for the old one.
-            fitPasses = 0
-            settleTask?.cancel()
-            settleTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled, let previous = store else { return }
-                store = makeStore()
-                storeGeneration += 1
-                await previous.stop()
-            }
+            state.watch(grid.map { "\($0.columns)x\($0.rows)" }, makeStore: makeStore)
         }
         .onDisappear {
-            settleTask?.cancel()
-            guard let store else { return }
-            Task { await store.stop() }
+            // A pooled one keeps watching offscreen, as the Agent screens' own
+            // retained connections do.
+            guard pooled == nil else { return }
+            state.stop()
         }
     }
 
     private func screen(_ store: AttachTerminalStore) -> TerminalScreenView {
         var screen = TerminalScreenView(feed: store.feed)
+        screen.retention = state.retention
         screen.onSizeChanged = { cols, rows in
             fit(reportedColumns: cols, reportedRows: rows)
             store.viewDidResize(cols: cols, rows: rows)
@@ -158,8 +152,8 @@ struct DashboardLiveTerminal: View {
     /// how much wider or taller the canvas must be for the remote grid. A few
     /// passes absorb the terminal's padding and rounding.
     private func fit(reportedColumns: Int, reportedRows: Int) {
-        guard let remoteGrid, reportedColumns > 0, reportedRows > 0, fitPasses < 6 else { return }
-        let current = canvas ?? estimatedCanvas(for: remoteGrid)
+        guard let remoteGrid, reportedColumns > 0, reportedRows > 0, state.fitPasses < 6 else { return }
+        let current = state.canvas ?? estimatedCanvas(for: remoteGrid)
         if reportedColumns == remoteGrid.columns, reportedRows == remoteGrid.rows {
             Self.fittedCanvases["\(fontKey)|\(remoteGrid.columns)x\(remoteGrid.rows)"] = current
             Self.cellSizes[fontKey] = CGSize(
@@ -172,13 +166,13 @@ struct DashboardLiveTerminal: View {
             width: (current.width + CGFloat(remoteGrid.columns - reportedColumns) * cellWidth).rounded(.up),
             height: (current.height + CGFloat(remoteGrid.rows - reportedRows) * cellHeight).rounded(.up))
         guard next != current else { return }
-        fitPasses += 1
-        canvas = next
+        state.fitPasses += 1
+        state.canvas = next
     }
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch store?.status ?? .waitingForSize {
+        switch state.store?.status ?? .waitingForSize {
         case .waitingForSize, .connecting:
             DashboardTileMessage(text: String(localized: "Connecting…"), showsProgress: true)
         case .reconnecting, .restarting:
@@ -357,5 +351,86 @@ struct ViewOnlyDetail: View {
             item: item, agent: agent, terminal: terminal, console: console, isLive: true,
             onClose: nil, onTakeControl: { ViewOnlyControl.shared.take(item.id) }, onBack: onBack)
             .onAppear { ViewOnlyControl.shared.didShowLocked(item.id) }
+    }
+}
+
+/// What a live watch-only terminal keeps: its Attach, the surface drawing it,
+/// and the canvas fitted to the remote grid.
+@MainActor
+@Observable
+final class LiveTerminalState {
+    var store: AttachTerminalStore?
+    @ObservationIgnored let retention = TerminalSurfaceRetention()
+    /// The fixed size the terminal lays out at, converging on the remote grid.
+    var canvas: CGSize?
+    @ObservationIgnored var fitPasses = 0
+    /// A fresh Attach after a remote resize gets a fresh surface, which
+    /// reports its size and so starts it.
+    var storeGeneration = 0
+    @ObservationIgnored private var grid: String?
+    @ObservationIgnored private var settleTask: Task<Void, Never>?
+
+    /// The remote grid now: a change reattaches once it has held still.
+    func watch(_ grid: String?, makeStore: @escaping () -> AttachTerminalStore) {
+        guard grid != self.grid else { return }
+        let isFirst = self.grid == nil
+        self.grid = grid
+        guard !isFirst else { return }
+        fitPasses = 0
+        settleTask?.cancel()
+        settleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, !Task.isCancelled, let previous = self.store else { return }
+            self.store = makeStore()
+            self.storeGeneration += 1
+            await previous.stop()
+        }
+    }
+
+    func stop() {
+        settleTask?.cancel()
+        retention.clear()
+        guard let store else { return }
+        self.store = nil
+        Task { await store.stop() }
+    }
+}
+
+/// The last few locked details per Host, kept watching offscreen so going
+/// back to one shows it at once (personal build). Each is an observe
+/// Attach, which never sizes the Pane.
+@MainActor
+final class ViewOnlyPool {
+    static let shared = ViewOnlyPool()
+
+    struct Key: Hashable {
+        let id: ConsoleTerminal.ID
+        let generation: UInt64?
+        let attempt: Int
+    }
+
+    /// Below a Host's five Attaches, with room for the controlled screen.
+    static let perHost = 3
+
+    /// Most recent last.
+    private var entries: [(key: Key, state: LiveTerminalState)] = []
+
+    func state(for key: Key) -> LiveTerminalState {
+        if let index = entries.firstIndex(where: { $0.key == key }) {
+            let entry = entries.remove(at: index)
+            entries.append(entry)
+            return entry.state
+        }
+        // The same Pane on an older link or attempt is done.
+        for stale in entries where stale.key.id == key.id { stale.state.stop() }
+        entries.removeAll { $0.key.id == key.id }
+        let state = LiveTerminalState()
+        entries.append((key, state))
+        let onHost = entries.filter { $0.key.id.hostID == key.id.hostID }
+        for old in onHost.dropLast(Self.perHost) {
+            old.state.stop()
+            entries.removeAll { $0.key == old.key }
+        }
+        return state
     }
 }
