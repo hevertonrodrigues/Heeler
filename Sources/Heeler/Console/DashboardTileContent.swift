@@ -66,7 +66,7 @@ struct DashboardLiveTerminal: View {
         GeometryReader { proxy in
             if let store {
                 if let remoteGrid {
-                    let canvas = canvas ?? Self.estimatedCanvas(for: remoteGrid)
+                    let canvas = canvas ?? estimatedCanvas(for: remoteGrid)
                     let scale =
                         switch fit {
                         case .whole:
@@ -131,7 +131,26 @@ struct DashboardLiveTerminal: View {
     }
 
     /// A first guess before the terminal reports: about 7 × 16 points a cell.
-    private static func estimatedCanvas(for grid: GridSize) -> CGSize {
+    /// Canvases that held a grid exactly, per font: a Pane opened again, or
+    /// one the same size, lays out once instead of converging over passes.
+    @MainActor private static var fittedCanvases: [String: CGSize] = [:]
+    /// Points per cell, per font, from the last fit: a close first guess for
+    /// any other grid.
+    @MainActor private static var cellSizes: [String: CGSize] = [:]
+
+    private var fontKey: String { "\(terminal.fonts.familyName ?? "-")|\(terminal.zoom.fontSize)" }
+
+    private func estimatedCanvas(for grid: GridSize) -> CGSize {
+        if let fitted = Self.fittedCanvases["\(fontKey)|\(grid.columns)x\(grid.rows)"] { return fitted }
+        if let cell = Self.cellSizes[fontKey] {
+            return CGSize(
+                width: (CGFloat(grid.columns) * cell.width).rounded(.up) + 8,
+                height: (CGFloat(grid.rows) * cell.height).rounded(.up) + 8)
+        }
+        return Self.firstGuess(for: grid)
+    }
+
+    private static func firstGuess(for grid: GridSize) -> CGSize {
         CGSize(width: CGFloat(grid.columns) * 7 + 8, height: CGFloat(grid.rows) * 16 + 8)
     }
 
@@ -140,8 +159,13 @@ struct DashboardLiveTerminal: View {
     /// passes absorb the terminal's padding and rounding.
     private func fit(reportedColumns: Int, reportedRows: Int) {
         guard let remoteGrid, reportedColumns > 0, reportedRows > 0, fitPasses < 6 else { return }
-        let current = canvas ?? Self.estimatedCanvas(for: remoteGrid)
-        if reportedColumns == remoteGrid.columns, reportedRows == remoteGrid.rows { return }
+        let current = canvas ?? estimatedCanvas(for: remoteGrid)
+        if reportedColumns == remoteGrid.columns, reportedRows == remoteGrid.rows {
+            Self.fittedCanvases["\(fontKey)|\(remoteGrid.columns)x\(remoteGrid.rows)"] = current
+            Self.cellSizes[fontKey] = CGSize(
+                width: current.width / CGFloat(reportedColumns), height: current.height / CGFloat(reportedRows))
+            return
+        }
         let cellWidth = current.width / CGFloat(reportedColumns)
         let cellHeight = current.height / CGFloat(reportedRows)
         let next = CGSize(
@@ -292,6 +316,28 @@ final class ViewOnlyControl {
     /// tmux. A Herdr TUI attach would take it over anyway.
     static func locks(_ hostID: Host.ID, in console: ConsoleStore) -> Bool {
         console.coreProjection(on: hostID) != nil || console.tmuxProjection(on: hostID) != nil
+    }
+}
+
+/// An Agent's detail while it is locked. Its own body reads the Console's
+/// lists, so their changes rebuild this and not the whole Agent detail.
+struct ViewOnlyAgentDetail: View {
+    let agent: ConsoleAgent
+    let terminal: TerminalSettings
+    let console: ConsoleStore
+
+    var body: some View {
+        if let pane = console.terminals.first(where: { $0.agentID == agent.id }) {
+            ViewOnlyDetail(
+                item: pane, agent: console.agents.first { $0.id == agent.id } ?? agent,
+                terminal: terminal, console: console)
+        } else {
+            ZStack {
+                Color.black
+                ProgressView()
+            }
+            .environment(\.colorScheme, .dark)
+        }
     }
 }
 
