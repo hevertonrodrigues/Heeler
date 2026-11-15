@@ -2,9 +2,13 @@ import SwiftUI
 
 /// A watch-only live terminal for one Dashboard cell: an observe Attach
 /// (`takeover: false`, `viewer: .observe`) that never types, scrolls or sizes
-/// the remote Pane. When the remote grid is known (tmux and herdr-core report
-/// it) the font shrinks until the whole Pane fits the cell, so its output is
-/// drawn at the Pane's real width instead of wrapping.
+/// the remote Pane.
+///
+/// Where the remote grid is known (tmux and herdr-core report it), the
+/// terminal lays out on a fixed canvas exactly that many columns and rows at
+/// the user's font size, and the cell only scales the picture. Resizing a cell
+/// is then a zoom: the terminal never reflows, so the Pane looks as it does on
+/// the machine. The canvas follows the remote Pane when that one resizes.
 struct DashboardLiveTerminal: View {
     let terminal: TerminalSettings
     let remoteColumns: Int?
@@ -12,34 +16,71 @@ struct DashboardLiveTerminal: View {
     /// Recreates the Attach; a `retry()` would come back interactive.
     let onReconnect: () -> Void
 
-    @State private var store: AttachTerminalStore
-    @State private var fontSize: Float
+    @State private var store: AttachTerminalStore?
+    private let makeStore: () -> AttachTerminalStore
+    /// The fixed size the terminal lays out at, converging on the remote grid.
+    @State private var canvas: CGSize?
     @State private var fitPasses = 0
     @Environment(\.themeAppearance) private var themeAppearance
 
+    private struct GridSize: Equatable {
+        let columns: Int
+        let rows: Int
+    }
+
+    /// Upscaling past this blurs; a cell larger than the Pane leaves margins.
+    private static let maximumScale: CGFloat = 1.5
+
     init(
-        store: AttachTerminalStore, terminal: TerminalSettings, remoteColumns: Int?, remoteRows: Int?,
-        onReconnect: @escaping () -> Void
+        terminal: TerminalSettings, remoteColumns: Int?, remoteRows: Int?,
+        onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
     ) {
-        _store = State(wrappedValue: store)
         self.terminal = terminal
         self.remoteColumns = remoteColumns
         self.remoteRows = remoteRows
         self.onReconnect = onReconnect
-        _fontSize = State(wrappedValue: max(terminal.zoom.fontSize * 0.6, 3))
+        self.makeStore = makeStore
+    }
+
+    private var remoteGrid: GridSize? {
+        guard let remoteColumns, let remoteRows, remoteColumns > 0, remoteRows > 0 else { return nil }
+        return GridSize(columns: remoteColumns, rows: remoteRows)
     }
 
     var body: some View {
-        screen
-            .allowsHitTesting(false)
-            .overlay { statusOverlay }
-            .onDisappear {
-                let store = store
-                Task { await store.stop() }
+        GeometryReader { proxy in
+            if let store {
+                if let remoteGrid {
+                    let canvas = canvas ?? Self.estimatedCanvas(for: remoteGrid)
+                    let scale = min(
+                        proxy.size.width / canvas.width, proxy.size.height / canvas.height, Self.maximumScale)
+                    screen(store)
+                        .frame(width: canvas.width, height: canvas.height)
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(width: canvas.width * scale, height: canvas.height * scale, alignment: .topLeading)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    screen(store)
+                }
             }
+        }
+        .clipped()
+        .allowsHitTesting(false)
+        .overlay { statusOverlay }
+        .onAppear {
+            if store == nil { store = makeStore() }
+        }
+        .onChange(of: remoteGrid) { _, _ in
+            // The remote Pane resized: converge on its new grid.
+            fitPasses = 0
+        }
+        .onDisappear {
+            guard let store else { return }
+            Task { await store.stop() }
+        }
     }
 
-    private var screen: TerminalScreenView {
+    private func screen(_ store: AttachTerminalStore) -> TerminalScreenView {
         var screen = TerminalScreenView(feed: store.feed)
         screen.onSizeChanged = { cols, rows in
             fit(reportedColumns: cols, reportedRows: rows)
@@ -49,29 +90,36 @@ struct DashboardLiveTerminal: View {
         screen.isRemoteScrollEnabled = false
         screen.theme = terminal.themes.terminalTheme(for: themeAppearance)
         screen.displayColors = terminal.themes.colors(for: themeAppearance)
-        screen.fontSize = fontSize
+        screen.fontSize = remoteGrid == nil ? max(terminal.zoom.fontSize * 0.7, 4) : terminal.zoom.fontSize
         screen.fontFamily = terminal.fonts.familyName
         return screen
     }
 
-    /// Columns and rows scale inversely with the font size, so one report
-    /// says what size fits the remote grid. A second pass corrects rounding.
+    /// A first guess before the terminal reports: about 7 × 16 points a cell.
+    private static func estimatedCanvas(for grid: GridSize) -> CGSize {
+        CGSize(width: CGFloat(grid.columns) * 7 + 8, height: CGFloat(grid.rows) * 16 + 8)
+    }
+
+    /// Each report says how many cells the current canvas holds, so it says
+    /// how much wider or taller the canvas must be for the remote grid. A few
+    /// passes absorb the terminal's padding and rounding.
     private func fit(reportedColumns: Int, reportedRows: Int) {
-        guard fitPasses < 2, let remoteColumns, remoteColumns > 0, reportedColumns > 0, reportedRows > 0 else { return }
-        var scale = Float(reportedColumns) / Float(remoteColumns)
-        if let remoteRows, remoteRows > 0 {
-            scale = min(scale, Float(reportedRows) / Float(remoteRows))
-        }
-        guard abs(1 - scale) > 0.03 else { return }
-        let fitted = min(max(fontSize * scale * 0.98, 2), terminal.zoom.fontSize)
-        guard abs(fitted - fontSize) > 0.05 else { return }
+        guard let remoteGrid, reportedColumns > 0, reportedRows > 0, fitPasses < 6 else { return }
+        let current = canvas ?? Self.estimatedCanvas(for: remoteGrid)
+        if reportedColumns == remoteGrid.columns, reportedRows == remoteGrid.rows { return }
+        let cellWidth = current.width / CGFloat(reportedColumns)
+        let cellHeight = current.height / CGFloat(reportedRows)
+        let next = CGSize(
+            width: (current.width + CGFloat(remoteGrid.columns - reportedColumns) * cellWidth).rounded(.up),
+            height: (current.height + CGFloat(remoteGrid.rows - reportedRows) * cellHeight).rounded(.up))
+        guard next != current else { return }
         fitPasses += 1
-        fontSize = fitted
+        canvas = next
     }
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch store.status {
+        switch store?.status ?? .waitingForSize {
         case .waitingForSize, .connecting:
             DashboardTileMessage(text: String(localized: "Connecting…"), showsProgress: true)
         case .reconnecting, .restarting:

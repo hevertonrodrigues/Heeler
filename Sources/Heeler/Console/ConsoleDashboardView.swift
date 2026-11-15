@@ -1,9 +1,11 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Every live Agent and Terminal across the connected Hosts at once, each a
-/// watch-only cell the user can drag to reorder and resize by its corner.
-/// The arrangement persists in `DashboardLayoutStore`.
+/// watch-only cell on a 12-column grid (after react-grid-layout). Drag a cell
+/// by its header to move it and by its corner to resize it: the cell follows
+/// the finger, a placeholder shows where it will land, and the other cells
+/// move out of its way and close the gaps as it goes. Double-tap a header to
+/// toggle full width. The arrangement persists in `DashboardLayoutStore`.
 struct ConsoleDashboardView: View {
     enum Filter: String, CaseIterable, Identifiable {
         case all, agents, terminals
@@ -28,18 +30,26 @@ struct ConsoleDashboardView: View {
     let onDone: () -> Void
 
     @AppStorage("dashboard.filter") private var filter = Filter.all
-    @State private var resizing: [ConsoleTerminal.ID: DashboardSpan] = [:]
+    @State private var interaction: Interaction?
     @State private var attempts: [ConsoleTerminal.ID: Int] = [:]
-    @State private var dropTarget: ConsoleTerminal.ID?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private struct Interaction: Equatable {
+        enum Kind { case move, resize }
+        let id: ConsoleTerminal.ID
+        let kind: Kind
+        let start: DashboardGridRect
+        var translation: CGSize = .zero
+    }
 
     private static let padding: CGFloat = 16
+    private static let space = "dashboard.grid"
 
     var body: some View {
         NavigationStack {
             GeometryReader { proxy in
-                let metrics = DashboardGridMetrics(width: max(proxy.size.width - Self.padding * 2, 1))
-                content(metrics: metrics)
+                content(metrics: DashboardGridMetrics(width: max(proxy.size.width - Self.padding * 2, 1)))
             }
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.inline)
@@ -48,7 +58,7 @@ struct ConsoleDashboardView: View {
         }
     }
 
-    // MARK: Cells
+    // MARK: Grid
 
     private var shownTerminals: [ConsoleTerminal] {
         console.terminals.filter { terminal in
@@ -60,6 +70,8 @@ struct ConsoleDashboardView: View {
         }
     }
 
+    private var settle: Animation? { reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86) }
+
     @ViewBuilder
     private func content(metrics: DashboardGridMetrics) -> some View {
         let shown = shownTerminals
@@ -69,38 +81,126 @@ struct ConsoleDashboardView: View {
                 systemImage: "rectangle.3.group",
                 description: Text("Connected Hosts' Panes appear here as they start."))
         } else {
-            let byID = Dictionary(shown.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let order = layout.arranged(shown.map(\.id))
-            let modes = cellModes(order: order, byID: byID)
+            let base = layout.positions(for: shown.map(\.id))
+            let preview = preview(base: base, metrics: metrics)
+            let modes = cellModes(order: shown.map(\.id).sorted { (base[$0]?.y ?? 0, base[$0]?.x ?? 0) < (base[$1]?.y ?? 0, base[$1]?.x ?? 0) })
             ScrollView {
-                DashboardGridLayout {
-                    ForEach(order, id: \.self) { id in
-                        if let item = byID[id] {
-                            cell(item, mode: modes[id] ?? .snapshot(note: ""), metrics: metrics, order: order)
-                                .dashboardSpan(resizing[id] ?? layout.span(for: id))
-                        }
-                    }
+                if metrics.stacks {
+                    stacked(shown, positions: base, modes: modes, metrics: metrics)
+                } else {
+                    grid(shown, preview: preview, modes: modes, metrics: metrics)
                 }
-                .padding(Self.padding)
-                .animation(.snappy, value: order)
-                .animation(.snappy, value: resizing)
             }
+            .scrollDisabled(interaction != nil)
         }
     }
+
+    private struct Preview {
+        var positions: [ConsoleTerminal.ID: DashboardGridRect]
+        /// The cell under the finger, where the finger has it.
+        var floating: CGRect?
+        /// Where that cell lands if released now.
+        var target: DashboardGridRect?
+    }
+
+    /// The arrangement while a cell is being moved or resized: the cell held
+    /// where the finger is, snapped to a target the others flow around.
+    private func preview(base: [ConsoleTerminal.ID: DashboardGridRect], metrics: DashboardGridMetrics) -> Preview {
+        guard let interaction, base[interaction.id] != nil else { return Preview(positions: base) }
+        let startFrame = metrics.frame(of: interaction.start)
+        var floating = startFrame
+        let target: DashboardGridRect
+        switch interaction.kind {
+        case .move:
+            floating.origin.x = min(
+                max(startFrame.minX + interaction.translation.width, 0), metrics.width - startFrame.width)
+            floating.origin.y = max(startFrame.minY + interaction.translation.height, 0)
+            target = metrics.rect(movedTo: floating, size: interaction.start)
+        case .resize:
+            let minimum = metrics.minimumSize
+            floating.size.width = min(
+                max(startFrame.width + interaction.translation.width, minimum.width), metrics.width - startFrame.minX)
+            floating.size.height = max(startFrame.height + interaction.translation.height, minimum.height)
+            target = metrics.rect(resizedTo: floating, origin: interaction.start)
+        }
+        var items = base
+        items[interaction.id] = target
+        let positions = DashboardGrid.compact(items, pinned: interaction.id)
+        return Preview(positions: positions, floating: floating, target: positions[interaction.id])
+    }
+
+    private func grid(
+        _ shown: [ConsoleTerminal], preview: Preview, modes: [ConsoleTerminal.ID: CellMode], metrics: DashboardGridMetrics
+    ) -> some View {
+        let rows = preview.positions.values.map(\.bottom).max() ?? 0
+        let floatingBottom = preview.floating?.maxY ?? 0
+        // Room below the last cell to drag into.
+        let height = max(metrics.height(of: rows), floatingBottom) + DashboardGridMetrics.rowHeight * 4
+        return ZStack(alignment: .topLeading) {
+            if let target = preview.target {
+                let frame = metrics.frame(of: target)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                    }
+                    .frame(width: frame.width, height: frame.height)
+                    .offset(x: frame.minX, y: frame.minY)
+                    .animation(settle, value: target)
+            }
+            ForEach(shown) { item in
+                if let rect = preview.positions[item.id] {
+                    let isActive = interaction?.id == item.id
+                    let frame = isActive ? (preview.floating ?? metrics.frame(of: rect)) : metrics.frame(of: rect)
+                    cell(item, mode: modes[item.id] ?? .snapshot(note: ""), rect: rect, isActive: isActive, metrics: metrics)
+                        .frame(width: frame.width, height: frame.height)
+                        .scaleEffect(isActive && interaction?.kind == .move ? 1.02 : 1)
+                        .shadow(color: .black.opacity(isActive ? 0.25 : 0), radius: isActive ? 18 : 0, y: isActive ? 8 : 0)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .zIndex(isActive ? 1 : 0)
+                        .animation(isActive ? nil : settle, value: frame)
+                }
+            }
+        }
+        .frame(width: metrics.width, height: height, alignment: .topLeading)
+        .coordinateSpace(.named(Self.space))
+        .padding(Self.padding)
+    }
+
+    /// Too narrow for the grid: the cells one under another, in grid order,
+    /// at their grid height.
+    private func stacked(
+        _ shown: [ConsoleTerminal], positions: [ConsoleTerminal.ID: DashboardGridRect],
+        modes: [ConsoleTerminal.ID: CellMode], metrics: DashboardGridMetrics
+    ) -> some View {
+        let ordered = shown.sorted {
+            let lhs = positions[$0.id], rhs = positions[$1.id]
+            return (lhs?.y ?? 0, lhs?.x ?? 0) < (rhs?.y ?? 0, rhs?.x ?? 0)
+        }
+        return LazyVStack(spacing: DashboardGridMetrics.gap) {
+            ForEach(ordered) { item in
+                let rect = positions[item.id] ?? DashboardGridRect(x: 0, y: 0, w: 12, h: DashboardGrid.defaultHeight)
+                cell(item, mode: modes[item.id] ?? .snapshot(note: ""), rect: rect, isActive: false, interactive: false, metrics: metrics)
+                    .frame(height: metrics.height(of: rect.h))
+            }
+        }
+        .padding(Self.padding)
+    }
+
+    // MARK: Cells
 
     private enum CellMode {
         case live
         case snapshot(note: String)
     }
 
-    /// Live up to each Host's share of the budget, in Dashboard order; a
-    /// Herdr TUI Host never, since its attach takes the Pane over.
-    private func cellModes(
-        order: [ConsoleTerminal.ID], byID: [ConsoleTerminal.ID: ConsoleTerminal]
-    ) -> [ConsoleTerminal.ID: CellMode] {
+    /// Live up to each Host's share of the budget, top to bottom; a Herdr TUI
+    /// Host never, since its attach takes the Pane over.
+    private func cellModes(order: [ConsoleTerminal.ID]) -> [ConsoleTerminal.ID: CellMode] {
         var used: [Host.ID: Int] = [:]
         var modes: [ConsoleTerminal.ID: CellMode] = [:]
-        for id in order where byID[id] != nil {
+        for id in order {
             let kind = hosts.consoleHosts.first { $0.id == id.hostID }?.serverKind
             if kind == .herdrTUI {
                 modes[id] = .snapshot(note: String(localized: "Preview"))
@@ -115,33 +215,25 @@ struct ConsoleDashboardView: View {
     }
 
     private func cell(
-        _ item: ConsoleTerminal, mode: CellMode, metrics: DashboardGridMetrics, order: [ConsoleTerminal.ID]
+        _ item: ConsoleTerminal, mode: CellMode, rect: DashboardGridRect, isActive: Bool, interactive: Bool = true,
+        metrics: DashboardGridMetrics
     ) -> some View {
         let agent = item.agentID.flatMap { id in console.agents.first { $0.id == id } }
-        let span = resizing[item.id] ?? layout.span(for: item.id)
         return VStack(spacing: 0) {
-            header(item, agent: agent, span: span, metrics: metrics)
+            header(item, agent: agent, rect: rect, interactive: interactive, metrics: metrics)
             Divider()
             cellBody(item, mode: mode)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(dropTarget == item.id ? Color.accentColor : Color.primary.opacity(0.08),
-                              lineWidth: dropTarget == item.id ? 3 : 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isActive ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isActive ? 2 : 1)
         }
         .overlay(alignment: .bottomTrailing) {
-            resizeHandle(for: item.id, span: span, metrics: metrics)
-        }
-        .dropDestination(for: String.self) { payloads, _ in
-            guard let moving = payloads.first.flatMap(Self.decodeID) else { return false }
-            withAnimation(.snappy) { layout.move(moving, before: item.id, in: order) }
-            return true
-        } isTargeted: { targeted in
-            if targeted { dropTarget = item.id } else if dropTarget == item.id { dropTarget = nil }
+            if interactive { resizeHandle(for: item.id, rect: rect, metrics: metrics) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.cell")
@@ -155,15 +247,16 @@ struct ConsoleDashboardView: View {
             switch mode {
             case .live:
                 let generation = console.hostConnectionGenerations[item.hostID]
+                let runner = console.terminalRunner(for: item.hostID)
+                let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
                 DashboardLiveTerminal(
-                    store: AttachTerminalStore(
-                        target: item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID),
-                        takeover: false, viewer: .observe, isViewed: true,
-                        transportGeneration: generation,
-                        runTerminal: console.terminalRunner(for: item.hostID)),
-                    terminal: terminal,
-                    remoteColumns: item.gridColumns, remoteRows: item.gridRows,
-                    onReconnect: { attempts[item.id, default: 0] += 1 })
+                    terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows,
+                    onReconnect: { attempts[item.id, default: 0] += 1 },
+                    makeStore: {
+                        AttachTerminalStore(
+                            target: target, takeover: false, viewer: .observe, isViewed: true,
+                            transportGeneration: generation, runTerminal: runner)
+                    })
                 .id("\(item.hostID)|\(item.paneID)|\(generation ?? 0)|\(attempts[item.id] ?? 0)")
             case .snapshot(let note):
                 DashboardSnapshotTerminal(
@@ -173,12 +266,15 @@ struct ConsoleDashboardView: View {
     }
 
     private func header(
-        _ item: ConsoleTerminal, agent: ConsoleAgent?, span: DashboardSpan, metrics: DashboardGridMetrics
+        _ item: ConsoleTerminal, agent: ConsoleAgent?, rect: DashboardGridRect, interactive: Bool,
+        metrics: DashboardGridMetrics
     ) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            if interactive {
+                Image(systemName: "line.3.horizontal")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
             if let agent {
                 Circle()
                     .fill(Color(uiColor: agent.agent.status.inkUIColor))
@@ -188,83 +284,89 @@ struct ConsoleDashboardView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text([item.hostName, item.workspaceLabel].compactMap(\.self).joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Text([item.hostName, item.workspaceLabel].compactMap(\.self).joined(separator: " · "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             Spacer(minLength: 0)
-            sizeMenu(for: item.id, span: span, metrics: metrics)
+            if let columns = item.gridColumns, let rows = item.gridRows {
+                Text(verbatim: "\(columns)×\(rows)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(height: 34)
         .contentShape(Rectangle())
-        .draggable(Self.encodeID(item.id)) {
-            Label(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle, systemImage: "rectangle.on.rectangle")
-                .padding(8)
-                .background(.regularMaterial, in: Capsule())
+        .hoverEffect(.highlight)
+        .highPriorityGesture(interactive ? moveGesture(for: item.id, rect: rect, metrics: metrics) : nil)
+        .onTapGesture(count: 2) {
+            guard interactive else { return }
+            toggleFullWidth(item.id, rect: rect)
         }
+        .accessibilityAction(named: "Toggle Full Width") { toggleFullWidth(item.id, rect: rect) }
     }
 
-    private func sizeMenu(for id: ConsoleTerminal.ID, span: DashboardSpan, metrics: DashboardGridMetrics) -> some View {
-        Menu {
-            let presets: [DashboardSpan] = [
-                .init(columns: 1, rows: 1), .init(columns: 2, rows: 1), .init(columns: 1, rows: 2),
-                .init(columns: 2, rows: 2), .init(columns: 3, rows: 2), .init(columns: 4, rows: 2),
-                .init(columns: 4, rows: 3),
-            ]
-            ForEach(presets.filter { $0.columns <= metrics.columns }, id: \.self) { preset in
-                Button {
-                    withAnimation(.snappy) { layout.setSpan(preset, for: id) }
-                } label: {
-                    if preset == span.clamped(toColumns: metrics.columns) {
-                        Label("\(preset.columns) × \(preset.rows)", systemImage: "checkmark")
-                    } else {
-                        Text(verbatim: "\(preset.columns) × \(preset.rows)")
-                    }
-                }
+    private func resizeHandle(for id: ConsoleTerminal.ID, rect: DashboardGridRect, metrics: DashboardGridMetrics) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            Color.clear
+            DashboardResizeGrip()
+                .stroke(Color.white.opacity(0.75), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .shadow(color: .black.opacity(0.5), radius: 1)
+                .frame(width: 14, height: 14)
+                .padding(7)
+        }
+        .frame(width: 40, height: 40)
+        .contentShape(Rectangle())
+        .hoverEffect(.highlight)
+        .highPriorityGesture(resizeGesture(for: id, rect: rect, metrics: metrics))
+        .accessibilityLabel("Resize")
+        .accessibilityIdentifier("dashboard.cell.resize")
+    }
+
+    // MARK: Gestures
+
+    private func moveGesture(for id: ConsoleTerminal.ID, rect: DashboardGridRect, metrics: DashboardGridMetrics) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
+            .onChanged { value in
+                if interaction == nil { interaction = Interaction(id: id, kind: .move, start: rect) }
+                interaction?.translation = value.translation
             }
-        } label: {
-            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                .font(.caption.weight(.semibold))
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Size")
-        .accessibilityIdentifier("dashboard.cell.size")
+            .onEnded { _ in finishInteraction(metrics: metrics) }
     }
 
-    /// A corner grip: dragging it snaps the cell to the nearest span live,
-    /// and lifting the finger keeps that span.
-    private func resizeHandle(for id: ConsoleTerminal.ID, span: DashboardSpan, metrics: DashboardGridMetrics) -> some View {
-        let committed = layout.span(for: id).clamped(toColumns: metrics.columns)
-        return Image(systemName: "arrow.down.right")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(.secondary)
-            .frame(width: 30, height: 30)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .padding(6)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                    .onChanged { value in
-                        let base = metrics.size(of: committed)
-                        let proposed = CGSize(
-                            width: base.width + value.translation.width, height: base.height + value.translation.height)
-                        let next = metrics.span(nearest: proposed)
-                        if resizing[id] != next { resizing[id] = next }
-                    }
-                    .onEnded { _ in
-                        if let next = resizing[id] { layout.setSpan(next, for: id) }
-                        resizing[id] = nil
-                    }
-            )
-            .accessibilityLabel("Resize")
-            .accessibilityIdentifier("dashboard.cell.resize")
+    private func resizeGesture(for id: ConsoleTerminal.ID, rect: DashboardGridRect, metrics: DashboardGridMetrics) -> some Gesture {
+        DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.space))
+            .onChanged { value in
+                if interaction == nil { interaction = Interaction(id: id, kind: .resize, start: rect) }
+                interaction?.translation = value.translation
+            }
+            .onEnded { _ in finishInteraction(metrics: metrics) }
+    }
+
+    /// Lands the cell on its target and lets everything settle upward.
+    private func finishInteraction(metrics: DashboardGridMetrics) {
+        guard interaction != nil else { return }
+        let base = layout.positions(for: shownTerminals.map(\.id))
+        let preview = preview(base: base, metrics: metrics)
+        withAnimation(settle) {
+            layout.commit(DashboardGrid.compact(preview.positions))
+            interaction = nil
+        }
+    }
+
+    private func toggleFullWidth(_ id: ConsoleTerminal.ID, rect: DashboardGridRect) {
+        var positions = layout.positions(for: shownTerminals.map(\.id))
+        positions[id] =
+            rect.w >= DashboardGrid.columns
+            ? DashboardGridRect(x: 0, y: rect.y, w: DashboardGrid.defaultWidth, h: rect.h)
+            : DashboardGridRect(x: 0, y: rect.y, w: DashboardGrid.columns, h: rect.h)
+        withAnimation(settle) {
+            layout.commit(DashboardGrid.compact(positions, pinned: id))
+        }
     }
 
     @ToolbarContentBuilder
@@ -283,25 +385,23 @@ struct ConsoleDashboardView: View {
         ToolbarItem(placement: .primaryAction) {
             Menu {
                 Button("Reset Layout", systemImage: "arrow.counterclockwise", role: .destructive) {
-                    withAnimation(.snappy) { layout.reset() }
+                    withAnimation(settle) { layout.reset() }
                 }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }
         }
     }
+}
 
-    // MARK: Drag payload
-
-    private static func encodeID(_ id: ConsoleTerminal.ID) -> String {
-        "heeler-dashboard|\(id.hostID.uuidString)|\(id.paneID)"
-    }
-
-    private static func decodeID(_ payload: String) -> ConsoleTerminal.ID? {
-        let parts = payload.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
-        guard parts.count == 3, parts[0] == "heeler-dashboard", let host = UUID(uuidString: String(parts[1])) else {
-            return nil
-        }
-        return ConsoleTerminal.ID(hostID: host, paneID: String(parts[2]))
+/// Two short diagonal strokes in a cell's corner, the usual resize grip.
+private struct DashboardResizeGrip: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.35))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.35, y: rect.maxY))
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.75))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.75, y: rect.maxY))
+        return path
     }
 }

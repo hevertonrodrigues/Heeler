@@ -1,34 +1,17 @@
 import Foundation
 import Observation
 
-/// The size of one Dashboard cell, in grid units: columns across, rows down.
-struct DashboardSpan: Codable, Hashable, Sendable {
-    var columns: Int
-    var rows: Int
-
-    static let standard = DashboardSpan(columns: 1, rows: 1)
-    static let maximumColumns = 4
-    static let maximumRows = 4
-
-    func clamped(toColumns available: Int) -> DashboardSpan {
-        DashboardSpan(
-            columns: min(max(columns, 1), max(available, 1), Self.maximumColumns),
-            rows: min(max(rows, 1), Self.maximumRows))
-    }
-}
-
-/// The Dashboard's arrangement: the order of its cells and each one's span,
-/// keyed like pins by `{hostID, paneID}`. Panes the Dashboard has never seen
-/// join at the end at the standard span; entries for Panes that are gone are
-/// kept (a tmux or herdr Pane id can come back after a restart) and only
-/// dropped by Reset.
+/// The Dashboard's arrangement: each cell's grid rect, keyed like pins by
+/// `{hostID, paneID}`. Panes the Dashboard has never seen take the first free
+/// place at the default size. Rects for Panes that are gone are kept (a tmux
+/// or herdr Pane id can come back after a restart) until Reset.
 @MainActor
 @Observable
 final class DashboardLayoutStore {
     struct Entry: Codable, Hashable, Sendable {
         let hostID: UUID
         let paneID: String
-        var span: DashboardSpan
+        var rect: DashboardGridRect
 
         var id: ConsoleTerminal.ID { ConsoleTerminal.ID(hostID: hostID, paneID: paneID) }
     }
@@ -39,7 +22,7 @@ final class DashboardLayoutStore {
     }
 
     static let defaultsKey = "dashboard.layout"
-    private static let version = 1
+    private static let version = 2
 
     private(set) var entries: [Entry]
     @ObservationIgnored private nonisolated(unsafe) let defaults: UserDefaults
@@ -51,49 +34,43 @@ final class DashboardLayoutStore {
            stored.version == Self.version {
             entries = stored.entries
         } else {
+            // Version 1 kept an order and spans, not places; start fresh.
             entries = []
         }
     }
 
-    /// `ids` in Dashboard order: remembered ones as arranged, new ones after
-    /// them in the order given.
-    func arranged(_ ids: [ConsoleTerminal.ID]) -> [ConsoleTerminal.ID] {
-        let present = Set(ids)
-        let remembered = entries.map(\.id).filter { present.contains($0) }
-        let known = Set(remembered)
-        return remembered + ids.filter { !known.contains($0) }
-    }
-
-    func span(for id: ConsoleTerminal.ID) -> DashboardSpan {
-        entries.first { $0.id == id }?.span ?? .standard
-    }
-
-    func setSpan(_ span: DashboardSpan, for id: ConsoleTerminal.ID) {
-        if let index = entries.firstIndex(where: { $0.id == id }) {
-            guard entries[index].span != span else { return }
-            entries[index].span = span
-        } else {
-            entries.append(Entry(hostID: id.hostID, paneID: id.paneID, span: span))
+    /// Where each of `ids` sits: remembered cells where they were, new ones in
+    /// the first free place, all compacted so the grid has no holes.
+    func positions(for ids: [ConsoleTerminal.ID]) -> [ConsoleTerminal.ID: DashboardGridRect] {
+        let remembered = Dictionary(entries.map { ($0.id, $0.rect) }, uniquingKeysWith: { first, _ in first })
+        var positions: [ConsoleTerminal.ID: DashboardGridRect] = [:]
+        for id in ids {
+            if let rect = remembered[id] { positions[id] = rect }
         }
-        save()
+        positions = DashboardGrid.compact(positions)
+        for id in ids where positions[id] == nil {
+            positions[id] = DashboardGrid.firstFit(
+                w: DashboardGrid.defaultWidth, h: DashboardGrid.defaultHeight, among: Array(positions.values))
+        }
+        return positions
     }
 
-    /// Moves `moving` to just before `target` within the arrangement of
-    /// `shown`, the cells on screen now, remembering every one of them so the
-    /// new order survives Panes coming and going.
-    func move(_ moving: ConsoleTerminal.ID, before target: ConsoleTerminal.ID, in shown: [ConsoleTerminal.ID]) {
-        guard moving != target else { return }
-        var order = arranged(shown)
-        guard let from = order.firstIndex(of: moving) else { return }
-        order.remove(at: from)
-        guard let to = order.firstIndex(of: target) else { return }
-        order.insert(moving, at: to)
-        let spans = Dictionary(entries.map { ($0.id, $0.span) }, uniquingKeysWith: { first, _ in first })
-        let reordered = order.map { Entry(hostID: $0.hostID, paneID: $0.paneID, span: spans[$0] ?? .standard) }
-        // Entries for Panes not shown now keep their relative place at the end.
-        let shownSet = Set(order)
-        entries = reordered + entries.filter { !shownSet.contains($0.id) }
-        save()
+    /// Keeps `positions` as the arrangement of those cells; other remembered
+    /// cells stay as they were.
+    func commit(_ positions: [ConsoleTerminal.ID: DashboardGridRect]) {
+        var changed = false
+        for (id, rect) in positions {
+            if let index = entries.firstIndex(where: { $0.id == id }) {
+                if entries[index].rect != rect {
+                    entries[index].rect = rect
+                    changed = true
+                }
+            } else {
+                entries.append(Entry(hostID: id.hostID, paneID: id.paneID, rect: rect))
+                changed = true
+            }
+        }
+        if changed { save() }
     }
 
     func reset() {
