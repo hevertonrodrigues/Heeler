@@ -34,6 +34,9 @@ struct ConsoleView: View {
     /// drawer. It shares the detail column with the router's Agent path;
     /// only one is ever set.
     @State private var selectedTerminal: ConsoleTerminal?
+    /// Every Agent and Terminal at once, watch-only (personal build).
+    @State private var isShowingDashboard = false
+    @State private var dashboardLayout = DashboardLayoutStore()
     @State private var titleRename: AgentTitleRenameStore?
     /// Agents or Terminals, per window; empty until this window picks one.
     /// Hosts and Settings are tracked apart so neither is the tab a window
@@ -364,6 +367,11 @@ struct ConsoleView: View {
                     .modifier(ConsoleSheetPresentationModifier(presentation: presentation))
             }
         }
+        .fullScreenCover(isPresented: $isShowingDashboard) {
+            ConsoleDashboardView(
+                console: console, hosts: hosts, terminal: terminal, layout: dashboardLayout,
+                onDone: { isShowingDashboard = false })
+        }
         // A Usage widget's tap. ContentView routes `heeler://agent` links;
         // these land on this window's Usage tab.
         .onOpenURL { url in
@@ -628,6 +636,7 @@ struct ConsoleView: View {
             Button(ConsoleTab.hosts.title, systemImage: "server.rack") { showHosts() }
                 .overlay(alignment: .topTrailing) { SidebarIconBadge(label: hostUpdatesBadge) }
             Button(ConsoleTab.settings.title, systemImage: "gearshape") { showSettings() }
+            dashboardButton
             Spacer(minLength: 0)
         }
         .labelStyle(.iconOnly)
@@ -1211,6 +1220,11 @@ struct ConsoleView: View {
                 presentationMenu(for: tab).hoverEffect(.highlight)
             }
         }
+        if !usesSidebarNavigation, tab.isList, !hosts.consoleHosts.isEmpty {
+            ToolbarItem(placement: .primaryAction) {
+                dashboardButton.hoverEffect(.highlight)
+            }
+        }
         if usesSidebarNavigation {
             // One item, so the bar sets no gap between the two, and neither
             // folds into its overflow menu without the other: beside a
@@ -1277,6 +1291,15 @@ struct ConsoleView: View {
             listsTerminals: tab == .terminals, capabilities: { console.capabilities(for: $0) })
     }
 
+    /// Opens the Dashboard; only offered once there is a Host to show.
+    @ViewBuilder
+    private var dashboardButton: some View {
+        if !hosts.consoleHosts.isEmpty {
+            Button("Dashboard", systemImage: "rectangle.3.group") { isShowingDashboard = true }
+                .accessibilityIdentifier("console.dashboard")
+        }
+    }
+
     /// An iPad sidebar's foot, standing in for the tab bar: Hosts and
     /// Settings, then the list's menus.
     private func sidebarFooter(for tab: ConsoleTab) -> some View {
@@ -1284,6 +1307,7 @@ struct ConsoleView: View {
             Button(ConsoleTab.hosts.title, systemImage: "server.rack") { showHosts() }
                 .overlay(alignment: .topTrailing) { SidebarIconBadge(label: hostUpdatesBadge) }
             Button(ConsoleTab.settings.title, systemImage: "gearshape") { showSettings() }
+            dashboardButton
             Spacer(minLength: 0)
             // A menu's pointer target is its own, not its button style's
             // label, so it takes the round highlight here.
