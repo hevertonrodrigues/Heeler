@@ -460,12 +460,32 @@ struct DashboardFullScreenView: View {
     let terminal: TerminalSettings
     let console: ConsoleStore
     let isLive: Bool
-    let onClose: () -> Void
+    /// Nil shows it in place, as an Agent's or Terminal's locked detail:
+    /// no close, and the window's status bar and appearance left alone.
+    let onClose: (() -> Void)?
     let onTakeControl: () -> Void
+    /// In place in a narrow window, where nothing else leads back.
+    var onBack: (() -> Void)? = nil
 
     @State private var attempt = 0
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
+        if let onClose {
+            content
+                .preferredColorScheme(.dark)
+                .statusBarHidden()
+                .gesture(
+                    DragGesture(minimumDistance: 30).onEnded { value in
+                        if value.translation.height > 120, abs(value.translation.width) < 80 { onClose() }
+                    })
+        } else {
+            content
+                .environment(\.colorScheme, .dark)
+        }
+    }
+
+    private var content: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
             Group {
@@ -505,16 +525,16 @@ struct DashboardFullScreenView: View {
             .padding(20)
             .accessibilityIdentifier("dashboard.fullscreen.takeControl")
         }
-        .preferredColorScheme(.dark)
-        .statusBarHidden()
-        .gesture(
-            DragGesture(minimumDistance: 30).onEnded { value in
-                if value.translation.height > 120, abs(value.translation.width) < 80 { onClose() }
-            })
     }
 
     private var bar: some View {
         HStack(spacing: 10) {
+            if let onBack, horizontalSizeClass == .compact {
+                Button("Back", systemImage: "chevron.backward", action: onBack)
+                    .labelStyle(.iconOnly)
+                    .font(.body.weight(.semibold))
+                    .frame(width: 36, height: 36)
+            }
             DashboardStatusMark(agent: agent)
             VStack(alignment: .leading, spacing: 0) {
                 Text(agent.map(AgentTerminalView.displayTitle(for:)) ?? item.displayTitle)
@@ -535,12 +555,21 @@ struct DashboardFullScreenView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
-            Button("Close", systemImage: "xmark", action: onClose)
-                .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
-                .frame(width: 36, height: 36)
-                .background(.regularMaterial, in: Circle())
-                .accessibilityIdentifier("dashboard.fullscreen.close")
+            if let onClose {
+                Button("Close", systemImage: "xmark", action: onClose)
+                    .labelStyle(.iconOnly)
+                    .font(.body.weight(.semibold))
+                    .frame(width: 36, height: 36)
+                    .background(.regularMaterial, in: Circle())
+                    .accessibilityIdentifier("dashboard.fullscreen.close")
+            } else {
+                Label("View only", systemImage: "lock.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(.regularMaterial, in: Capsule())
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 52)

@@ -250,3 +250,48 @@ extension DashboardTileMessage where Action == EmptyView {
         self.init(text: text, showsProgress: showsProgress) { EmptyView() }
     }
 }
+
+/// Which Agent or Terminal this device controls (personal build). Every
+/// other one opens locked and watch-only, so viewing never resizes the Pane
+/// on the machine; Take Control hands one over. Opening another locks the
+/// last one again.
+@MainActor
+@Observable
+final class ViewOnlyControl {
+    static let shared = ViewOnlyControl()
+
+    private(set) var controlled: ConsoleTerminal.ID?
+
+    func take(_ id: ConsoleTerminal.ID) { controlled = id }
+
+    func isControlling(_ id: ConsoleTerminal.ID) -> Bool { controlled == id }
+
+    /// A locked view of `id` is on screen: whatever was controlled before
+    /// is left behind.
+    func didShowLocked(_ id: ConsoleTerminal.ID) {
+        if controlled != id { controlled = nil }
+    }
+
+    /// Hosts whose Attach can watch without taking the Pane: herdr-core and
+    /// tmux. A Herdr TUI attach would take it over anyway.
+    static func locks(_ hostID: Host.ID, in console: ConsoleStore) -> Bool {
+        console.coreProjection(on: hostID) != nil || console.tmuxProjection(on: hostID) != nil
+    }
+}
+
+/// An Agent's or Terminal's detail while it is locked: the Dashboard's
+/// watch-only viewer in place, with Take Control.
+struct ViewOnlyDetail: View {
+    let item: ConsoleTerminal
+    let agent: ConsoleAgent?
+    let terminal: TerminalSettings
+    let console: ConsoleStore
+    var onBack: (() -> Void)? = nil
+
+    var body: some View {
+        DashboardFullScreenView(
+            item: item, agent: agent, terminal: terminal, console: console, isLive: true,
+            onClose: nil, onTakeControl: { ViewOnlyControl.shared.take(item.id) }, onBack: onBack)
+            .onAppear { ViewOnlyControl.shared.didShowLocked(item.id) }
+    }
+}

@@ -117,6 +117,11 @@ struct WorkspaceTerminalDetailView: View {
                             .buttonStyle(.terminalStatusSecondary)
                     }
                 }
+            } else if ViewOnlyControl.locks(terminal.hostID, in: console),
+                !ViewOnlyControl.shared.isControlling(terminal.id)
+            {
+                // Personal build: locked and watch-only until Take Control.
+                ViewOnlyDetail(item: terminal, agent: nil, terminal: settings, console: console, onBack: onBack)
             } else if let entry = shownEntry {
                 ShellTerminalView(
                     store: entry.store,

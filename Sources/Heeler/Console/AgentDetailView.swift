@@ -422,6 +422,16 @@ struct AgentDetailView: View {
         }
     }
 
+    /// The Agent's Pane while it is locked (personal build): nil once this
+    /// device controls it, or on a Host whose Attach cannot just watch.
+    private var lockedPane: ConsoleTerminal? {
+        guard ViewOnlyControl.locks(agent.hostID, in: console),
+            let pane = console.terminals.first(where: { $0.agentID == agent.id }),
+            !ViewOnlyControl.shared.isControlling(pane.id)
+        else { return nil }
+        return pane
+    }
+
     var body: some View {
         let _ = PerfTrace.count("AgentDetailView.body")
         let _ = contentPass.advance()
@@ -476,6 +486,11 @@ struct AgentDetailView: View {
                     }
                     .equatable()
                 }
+            } else if let locked = lockedPane {
+                // Personal build: locked and watch-only until Take Control.
+                ViewOnlyDetail(
+                    item: locked, agent: console.agents.first { $0.id == agent.id } ?? agent,
+                    terminal: terminal, console: console)
             } else {
                 AgentTerminalView(
                     agent: agent,

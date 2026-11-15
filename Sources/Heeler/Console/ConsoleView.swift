@@ -372,6 +372,7 @@ struct ConsoleView: View {
                 console: console, hosts: hosts, terminal: terminal, layout: dashboardLayout,
                 onDone: { isShowingDashboard = false },
                 onTakeControl: { item in
+                    ViewOnlyControl.shared.take(item.id)
                     isShowingDashboard = false
                     // The row's own screen, on the list that has it.
                     let tab: ConsoleTab = item.isAgent ? .agents : .terminals
