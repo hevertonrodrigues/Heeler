@@ -370,7 +370,14 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $isShowingDashboard) {
             ConsoleDashboardView(
                 console: console, hosts: hosts, terminal: terminal, layout: dashboardLayout,
-                onDone: { isShowingDashboard = false })
+                onDone: { isShowingDashboard = false },
+                onTakeControl: { item in
+                    isShowingDashboard = false
+                    // The row's own screen, on the list that has it.
+                    let tab: ConsoleTab = item.isAgent ? .agents : .terminals
+                    if currentTab != tab { selectedTab.wrappedValue = tab }
+                    selectTerminal(item)
+                })
         }
         // A Usage widget's tap. ContentView routes `heeler://agent` links;
         // these land on this window's Usage tab.

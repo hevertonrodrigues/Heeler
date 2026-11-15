@@ -28,6 +28,9 @@ struct ConsoleDashboardView: View {
     let terminal: TerminalSettings
     let layout: DashboardLayoutStore
     let onDone: () -> Void
+    /// Leaves watch-only for the Agent's or Terminal's own interactive
+    /// screen, as picking its row would.
+    var onTakeControl: (ConsoleTerminal) -> Void = { _ in }
 
     @AppStorage("dashboard.filter") private var filter = Filter.all
     @State private var interaction: Interaction?
@@ -63,7 +66,11 @@ struct ConsoleDashboardView: View {
                 DashboardFullScreenView(
                     item: item, agent: agent(for: item), terminal: terminal, console: console,
                     isLive: hosts.consoleHosts.first { $0.id == item.hostID }?.serverKind != .herdrTUI,
-                    onClose: { self.viewing = nil })
+                    onClose: { self.viewing = nil },
+                    onTakeControl: {
+                        self.viewing = nil
+                        onTakeControl(item)
+                    })
             } else {
                 DashboardFullScreenGone { self.viewing = nil }
             }
@@ -454,6 +461,7 @@ struct DashboardFullScreenView: View {
     let console: ConsoleStore
     let isLive: Bool
     let onClose: () -> Void
+    let onTakeControl: () -> Void
 
     @State private var attempt = 0
 
@@ -482,6 +490,20 @@ struct DashboardFullScreenView: View {
             }
             .padding(.top, 52)
             bar
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Button(action: onTakeControl) {
+                Label("Take Control", systemImage: "hand.point.up.left.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay { Capsule().strokeBorder(.white.opacity(0.15)) }
+                    .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+            }
+            .buttonStyle(.plain)
+            .padding(20)
+            .accessibilityIdentifier("dashboard.fullscreen.takeControl")
         }
         .preferredColorScheme(.dark)
         .statusBarHidden()
