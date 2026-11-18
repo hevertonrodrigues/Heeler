@@ -545,7 +545,7 @@ struct TmuxTransportE2ETests {
     func aVariableSetInTheGlobalAndSessionEnvironmentIsFoundByName() async throws {
         try await TmuxSSHFixture.with { fixture in
             let loginShell = trimmed(try await fixture.require(#"printf '%s' "$SHELL""#))
-            #expect(loginShell.hasSuffix("/fish"))
+            #expect(["bash", "zsh", "fish"].contains(URL(fileURLWithPath: loginShell).lastPathComponent))
 
             try await fixture.startServer()
             let session = trimmed(

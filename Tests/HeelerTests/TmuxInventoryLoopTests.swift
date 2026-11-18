@@ -201,6 +201,31 @@ struct TmuxInventoryLoopTests {
                 == .live(.init(instance: instance, pane: expectedPane, foregroundPID: 4501)))
     }
 
+    @Test func escapedAndUnescapedBracesKeepChatMetadataAndThePane() {
+        let pick = #"{"file":"/work/#{pane_id}/rollout.jsonl","session":"picked"}"#
+        let pane = TmuxInventory.Pane.make(chatPick: pick)
+        let original = TmuxLoopText.snapshot([pane], instance: instance)
+        // tmux 3.8 quotes braces in q: fields; older versions print them literally.
+        let escaped = Data(
+            String(decoding: original, as: UTF8.self)
+                .replacingOccurrences(of: "{", with: #"\{"#)
+                .replacingOccurrences(of: "}", with: #"\}"#).utf8)
+
+        for data in [original, escaped] {
+            for chunkSize in [1, 5, data.count] {
+                var reader = TmuxInventoryLoop.Reader(nonce: nonce)
+                var events: [TmuxInventoryLoop.Event] = []
+                var offset = data.startIndex
+                while offset < data.endIndex {
+                    let next = min(offset + chunkSize, data.endIndex)
+                    events += reader.read(data.subdata(in: offset..<next))
+                    offset = next
+                }
+                #expect(events == [.inventory(TmuxInventory(instance: instance, panes: [pane]))])
+            }
+        }
+    }
+
     @Test func aRowOfAnotherServerIsLeftOutOfOneAnswer() throws {
         var text = Data("\(nonce) begin\n".utf8)
         text.append(TmuxLoopText.row(.make(), instance: instance))

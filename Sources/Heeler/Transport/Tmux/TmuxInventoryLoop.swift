@@ -96,7 +96,7 @@ enum TmuxInventoryLoop {
     /// POSIX awk helper `qf()` reading one `#{q:...}` + space field from `s` at
     /// `u`..`e` into `v`, unescaping `format_quote_shell` and tmux 3.4/3.5a `strvis`.
     fileprivate static let awkQuotedFieldFunction =
-        #"function qf(r,b,c,d,k){r="";while(u<=e){b=0;while(u<=e&&substr(s,u,1)=="\\"){b++;u++}if(u>e)return 0;c=substr(s,u,1);if(b==0){if(c==" "){u++;v=r;return 1}if(index("|&;<>()$`\"\047*?[#=%",c))return 0;r=r c;u++;continue}if(c=="$"){for(k=int((b-1)/2);k>0;k--)r=r"\\";r=r"$";u++;continue}for(k=int(b/2);k>0;k--)r=r"\\";if(b%2==0)continue;if(index("|&;<>()`\"\047*?[# =%",c)){r=r c;u++;continue}if(c=="a"){r=r sprintf("%c",7);u++;continue}if(c=="b"){r=r sprintf("%c",8);u++;continue}if(c=="f"){r=r sprintf("%c",12);u++;continue}if(c=="r"){r=r sprintf("%c",13);u++;continue}if(c=="v"){r=r sprintf("%c",11);u++;continue}d=substr(s,u,3);if(d~/^[0-7][0-7][0-7]$/&&d!="000"){r=r sprintf("%c",substr(d,1,1)*64+substr(d,2,1)*8+substr(d,3,1));u+=3;continue}return 0}return 0}"#
+        #"function qf(r,b,c,d,k){r="";while(u<=e){b=0;while(u<=e&&substr(s,u,1)=="\\"){b++;u++}if(u>e)return 0;c=substr(s,u,1);if(b==0){if(c==" "){u++;v=r;return 1}if(index("|&;<>()$`\"\047*?[#=%",c))return 0;r=r c;u++;continue}if(c=="$"){for(k=int((b-1)/2);k>0;k--)r=r"\\";r=r"$";u++;continue}for(k=int(b/2);k>0;k--)r=r"\\";if(b%2==0)continue;if(index("|&;<>(){}`\"\047*?[# =%",c)){r=r c;u++;continue}if(c=="a"){r=r sprintf("%c",7);u++;continue}if(c=="b"){r=r sprintf("%c",8);u++;continue}if(c=="f"){r=r sprintf("%c",12);u++;continue}if(c=="r"){r=r sprintf("%c",13);u++;continue}if(c=="v"){r=r sprintf("%c",11);u++;continue}d=substr(s,u,3);if(d~/^[0-7][0-7][0-7]$/&&d!="000"){r=r sprintf("%c",substr(d,1,1)*64+substr(d,2,1)*8+substr(d,3,1));u+=3;continue}return 0}return 0}"#
 
     /// `w`: the loop. `g` holds what each pane ran when its arguments were last
     /// read, one `pane signature` line each, and awk walks the `#{q:...}` rows
@@ -662,7 +662,8 @@ enum TmuxQuotedField {
     }
 
     private static let shellQuotedNonSpace: Set<UInt8> = Set("|&;<>()$`\"'*?[#=%".utf8)
-    private static let shellQuotedEscaped: Set<UInt8> = Set("|&;<>()`\"'*?[# =%".utf8)
+    // tmux 3.8 also escapes braces; older versions leave them unescaped.
+    private static let shellQuotedEscaped: Set<UInt8> = Set("|&;<>(){}`\"'*?[# =%".utf8)
 
     private static func cEscapeByte(_ byte: UInt8) -> UInt8? {
         switch byte {

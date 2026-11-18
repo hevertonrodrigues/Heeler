@@ -468,8 +468,17 @@ class RowTests(LoopTestCase):
         self.assertEqual(first["panes"][0]["chatPick"], "")
         self.tmux("set-option", "-p", "-t", "main:0.0", "@heeler-chat", pick)
         second = loop.wait_for(2)[1]
+        self.assertEqual(len(second["panes"]), 1)
         self.assertEqual(second["panes"][0]["chatPick"], pick)
         self.assertEqual(json.loads(second["panes"][0]["chatPick"]), json.loads(pick))
+
+        # The awk row reader must also accept quoted braces when a changed
+        # program requires fresh foreground arguments, not just Swift's reader.
+        self.tmux("set-option", "-p", "-t", "main:0.0", "@heeler-status", "state=working:app=claude-code")
+        third = loop.wait_for(3)[2]
+        self.assertEqual(third["panes"][0]["chatPick"], pick)
+        self.assertEqual(third["panes"][0]["arguments"], ["/bin/sleep", "600"])
+        self.assertEqual([line.split()[1] for line in loop.argument_lines(2)], ["%0"])
 
 
 class ArgumentTests(LoopTestCase):
