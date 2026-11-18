@@ -425,8 +425,7 @@ struct SidebarConsoleIntegrationTests {
             try Task.checkCancellation()
             let changes = AsyncStream<Void>.makeStream()
             withObservationTracking {
-                _ = store.agents
-                _ = store.hostConnectionGenerations
+                _ = ready()
             } onChange: {
                 changes.continuation.yield(())
             }

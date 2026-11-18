@@ -8,7 +8,7 @@ import Testing
 /// A core Host's terminals from the store down: the real Console, Host session
 /// and link, with the SSH connection and the core scripted.
 @MainActor
-@Suite(.timeLimit(.minutes(1)))
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct HerdrCoreTerminalStoreTests {
     private final class Sink: TerminalByteSink {
         var received = Data()
@@ -25,6 +25,7 @@ struct HerdrCoreTerminalStoreTests {
         let scripted: ScriptedCoreHost
         private let box = SessionBox()
         private let directory = AgentSceneDirectory()
+        private let previousControl = ViewOnlyControl.shared.controlled
         let host = Host(address: "box.example", username: "dev", serverKind: .herdrCore)
         let console: ConsoleStore
 
@@ -95,7 +96,9 @@ struct HerdrCoreTerminalStoreTests {
             }
         }
 
-        /// A window showing `agent`'s detail, built as the Console builds it.
+        /// A window showing `agent`'s interactive detail after Take Control,
+        /// built as the Console builds it. These fixtures exercise its input,
+        /// status and retention, rather than the fork's initial locked preview.
         /// `sceneID` puts it under a scene root, as a real window is. Agents
         /// open on `surface` when one is given, and a departure for one waits
         /// `keyboardHideLeash` for the keyboard when one is given.
@@ -125,6 +128,7 @@ struct HerdrCoreTerminalStoreTests {
             let console = console
             let activity = AppActivityCoordinator()
             let routing = sceneID.map { AgentSceneRouting(directory: directory, sceneID: $0) }
+            ViewOnlyControl.shared.take(.init(hostID: agent.hostID, paneID: agent.id.paneID))
             let controller = UIHostingController(
                 rootView: HostedCoreDetail(selection: selection, routing: routing) {
                     AgentDetailView(
@@ -173,6 +177,7 @@ struct HerdrCoreTerminalStoreTests {
             let routing = AgentSceneRouting(directory: directory, sceneID: sceneID)
             let corePin = console.corePin(on: terminal.hostID)
             let defaults = try #require(UserDefaults(suiteName: "core-shell-\(UUID().uuidString)"))
+            ViewOnlyControl.shared.take(terminal.id)
             let controller = UIHostingController(
                 rootView: NavigationStack {
                     WorkspaceTerminalDetailView(
@@ -220,6 +225,7 @@ struct HerdrCoreTerminalStoreTests {
             let agentSurface = AgentDetailSurfaceSettings(defaults: defaults)
             agentSurface.select(surface)
             keyboardHandoff.armShellTerminal()
+            ViewOnlyControl.shared.take(terminal.id)
             let controller = UIHostingController(
                 rootView: HostedLiveShell(
                     console: console, terminal: terminal, corePin: console.corePin(on: terminal.hostID),
@@ -268,6 +274,10 @@ struct HerdrCoreTerminalStoreTests {
         /// The real Console in a window of its own, under a scene root as the app
         /// mounts it. `regularWidth` stands it beside its list, as on an iPad.
         func showConsole(regularWidth: Bool = false, tab: String = "agents") async throws -> CoreConsoleWindow {
+            // These routing tests follow one controlled Terminal across core
+            // changes; opening its locked preview would test another surface.
+            try #require(console.terminals.count == 1, "The routing fixture controls one Terminal")
+            ViewOnlyControl.shared.take(try #require(console.terminals.first).id)
             let composition = DemoScreenshotComposition.make()
             let router = AgentNotificationRouter()
             let sceneID = UUID()
@@ -343,6 +353,17 @@ struct HerdrCoreTerminalStoreTests {
             await console.terminalConnections.suspend()
             await console.agentTerminals.suspend()
             console.setHosts([])
+            // Multiple windows of this fixture share control until all are
+            // closed. Do not release control acquired by another fixture.
+            if ViewOnlyControl.shared.controlled?.hostID == host.id {
+                if let previousControl {
+                    ViewOnlyControl.shared.take(previousControl)
+                } else {
+                    // Showing another locked pane is the existing way to
+                    // leave control; this identity is never a fixture pane.
+                    ViewOnlyControl.shared.didShowLocked(.init(hostID: host.id, paneID: "test-control-released"))
+                }
+            }
         }
     }
 
@@ -3046,7 +3067,7 @@ struct HerdrCoreTerminalStoreTests {
         try await Self.until("the terminal's menu") { screen.offers("More") }
 
         let menus = try await HostedMenu.items(labeled: "More", in: screen.window)
-        #expect(menus == [["Terminals", "Expand"], ["Back to Console", "Close Terminal"]], "\(menus)")
+        #expect(menus == [["Terminals", "Expand"], ["Enter Password…", "Back to Console", "Close Terminal"]], "\(menus)")
 
         try await HostedMenu.select("Terminals", labeled: "More", in: screen.window)
         try await Self.until("the drawer") { screen.offers("Hide Workspace terminals") }

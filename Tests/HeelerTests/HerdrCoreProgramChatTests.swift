@@ -313,7 +313,9 @@ struct HerdrCoreProgramChatTests {
 
         try await rig.waitUntil("the message") { chat.conversation.phase == .unavailable(.codexSharedDaemon) }
         #expect(await chat.confirmSessionBeforeSend() != nil)
-        #expect(await rig.files.reads.isEmpty)
+        // The model picker may read metadata, but a shared daemon must not
+        // let this Agent read another window's conversation.
+        #expect(await rig.files.reads.allSatisfy { $0.path == "\(Self.home)/.codex/models_cache.json" })
         chat.end()
         rig.store.setHosts([])
     }
@@ -683,7 +685,9 @@ struct HerdrCoreProgramChatTests {
 
         try await rig.waitUntil("the message") { chat.conversation.phase == .unavailable(.codexSharedDaemon) }
         #expect(await chat.confirmSessionBeforeSend() != nil)
-        #expect(await rig.files.reads.isEmpty)
+        // The model picker may read metadata, but a shared daemon must not
+        // let this Agent read another window's conversation.
+        #expect(await rig.files.reads.allSatisfy { $0.path == "\(Self.home)/.codex/models_cache.json" })
         chat.end()
         rig.store.setHosts([])
     }

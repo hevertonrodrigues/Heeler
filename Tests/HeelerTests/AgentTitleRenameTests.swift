@@ -371,9 +371,12 @@ struct AgentTitleRenameTests {
         try await withTestWindow(
             frame: CGRect(x: 0, y: 0, width: 402, height: 874), rootViewController: controller
         ) { window in
-            try await waitUntil { accessibleElement(labeled: "Save", in: window) != nil }
+            try await waitUntil("the Rename sheet's Save control") {
+                accessibleElement(labeled: "Save", in: window) != nil
+            }
             await store.save()
-            try await waitUntil {
+            try #require(store.deferredSaveConfirmation?.title == "Saved while busy")
+            try await waitUntil("the deferred-rename confirmation alert") {
                 (controller.presentedViewController as? UIAlertController) != nil
             }
             let alert = try #require(controller.presentedViewController as? UIAlertController)
@@ -395,10 +398,13 @@ struct AgentTitleRenameTests {
         try await withTestWindow(
             frame: CGRect(x: 0, y: 0, width: 402, height: 874), rootViewController: reopenedController
         ) { window in
-            try await waitUntil {
-                Self.views(UILabel.self, in: window).contains {
-                    $0.text == "Saved on this device. Will be sent once the Agent stops."
-                }
+            let explanation = "Saved on this device. Will be sent once the Agent stops."
+            try await waitUntil("the reopened Rename sheet's queued-title explanation") {
+                // SwiftUI can expose a Form footer as accessibility text
+                // without backing it with a UILabel. Require the same exact
+                // displayed explanation through either representation.
+                accessibleElement(labeled: explanation, in: window) != nil
+                    || Self.views(UILabel.self, in: window).contains { $0.text == explanation }
             }
         }
     }
@@ -521,13 +527,13 @@ struct AgentTitleRenameTests {
         #expect((await transport.agentPromptParams).count == 1)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
+    private func waitUntil(_ description: String = "condition", _ condition: () -> Bool) async throws {
         var budget = PollBudget(.seconds(3))
         while !condition(), budget.hasTimeLeft {
             try await Task.sleep(for: .milliseconds(20))
             budget.charge()
         }
-        try #require(condition())
+        try #require(condition(), "Timed out waiting for \(description)")
     }
 
     private static func views<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
