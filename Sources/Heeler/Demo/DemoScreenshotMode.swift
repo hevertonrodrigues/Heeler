@@ -552,7 +552,8 @@
                 snapshotRetryDelay: .seconds(30),
                 pins: PinnedAgentsStore(defaults: defaults),
                 rowLayouts: AgentRowLayoutStore(defaults: defaults),
-                usageSettings: AgentUsageSettings(defaults: defaults)
+                usageSettings: AgentUsageSettings(defaults: defaults),
+                powerSettings: PowerModeSettings(defaults: defaults)
             ) { host, subscriptions in
                 EventsSession(
                     subscriptions: subscriptions,

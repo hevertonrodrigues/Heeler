@@ -207,6 +207,9 @@ final class ConsoleStore {
     /// one: demo mode and tests must not replace the real widgets' figures.
     @ObservationIgnored let usageWidgets: AgentUsageWidgetPublisher?
     @ObservationIgnored private let usageSettings: AgentUsageSettings
+    /// Shared by Settings and every window's terminal viewers.
+    let powerSettings: PowerModeSettings
+    let viewOnlyPool = ViewOnlyPool()
     /// Reads made only because a widget's figures went stale, per Host.
     @ObservationIgnored private var widgetUsageRefreshes: [Host.ID: (id: UUID, task: Task<Void, Never>)] = [:]
     /// The catalog in its order, which the widgets' snapshot keeps.
@@ -258,6 +261,7 @@ final class ConsoleStore {
         chatCache: any ChatTranscriptCache = VolatileChatTranscriptCache(),
         usageWidgets: AgentUsageWidgetPublisher? = nil,
         usageSettings: AgentUsageSettings = AgentUsageSettings(),
+        powerSettings: PowerModeSettings = PowerModeSettings(),
         makeSession: @escaping @Sendable (Host, [EventSubscription]) -> EventsSession =
             ConsoleStore.sshSessionFactory(),
         connectCore: @escaping @Sendable (Host) async throws -> any HerdrCoreTransport =
@@ -308,6 +312,7 @@ final class ConsoleStore {
         cachedChats = ConsoleChatCache(cache: chatCache)
         self.usageWidgets = usageWidgets
         self.usageSettings = usageSettings
+        self.powerSettings = powerSettings
         self.chatAdapter = chatAdapter
         let terminalBudget = TerminalRetentionBudget()
         terminalConnections = TerminalConnectionPool(budget: terminalBudget)
@@ -322,6 +327,7 @@ final class ConsoleStore {
         cachedChats.onChange = { [weak self] in
             self?.rebuildChatDisplayAgents()
         }
+        viewOnlyPool.applyPowerMode(powerSettings.mode)
     }
 
     /// Pins or unpins the Agent and re-sorts the published list in the same
@@ -329,6 +335,11 @@ final class ConsoleStore {
     func togglePin(hostID: Host.ID, paneID: String) {
         pins.togglePin(hostID: hostID, paneID: paneID)
         rebuild()
+    }
+
+    func setPowerMode(_ mode: AppPowerMode) {
+        powerSettings.select(mode)
+        viewOnlyPool.applyPowerMode(mode)
     }
 
     /// Aligns Host projections with the catalog. Editing a Host replaces its
@@ -383,6 +394,7 @@ final class ConsoleStore {
             await chatCache.retainHosts(hostIDs)
         }
         for (id, projection) in projections where incoming[id] != projection.host {
+            viewOnlyPool.removeHost(id)
             sidebarSnapshots.invalidate(id)
             pluginStatuses.invalidate(id)
             agyTitles.invalidateHost(id)
@@ -433,6 +445,7 @@ final class ConsoleStore {
             for projection in projections {
                 await projection.resume()
             }
+            viewOnlyPool.resume()
             agyTitles.bumpRefreshEpoch()
             reconcileAgyAnnotationTitles()
             reconcilePendingTitleRenames()
@@ -466,6 +479,7 @@ final class ConsoleStore {
     func suspend() async {
         await enqueueLifecycleTransition { [self] in
             isActive = false
+            viewOnlyPool.suspend()
             for refresh in widgetUsageRefreshes.values { refresh.task.cancel() }
             widgetUsageRefreshes.removeAll()
             cancelAllPendingTitleRenameWork()

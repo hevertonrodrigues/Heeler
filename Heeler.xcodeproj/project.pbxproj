@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AD4B2308124E4970B21901E1 /* PowerModeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B2308124E4970B21901E2 /* PowerModeSettings.swift */; };
+		AD4B2308124E4970B21901E3 /* PowerModeSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B2308124E4970B21901E4 /* PowerModeSettingsTests.swift */; };
+		AD4B2308124E4970B21901E5 /* DashboardPowerModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD4B2308124E4970B21901E6 /* DashboardPowerModeTests.swift */; };
 		EE05DAE9480FE3802A2BEA46 /* EphemeralTmuxServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A334296EBCE8F701D2C949E7 /* EphemeralTmuxServerTests.swift */; };
 		A835C334EF106D396ECD74E6 /* EphemeralTmuxServerSweeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7206FBE1BE471C500E326C6A /* EphemeralTmuxServerSweeper.swift */; };
 		50EC8DEA4EDDDACA860C8D27 /* DashboardLayoutStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D25D06E42DAB35E319B75A27 /* DashboardLayoutStoreTests.swift */; };
@@ -1278,6 +1281,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AD4B2308124E4970B21901E2 /* PowerModeSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerModeSettings.swift; sourceTree = "<group>"; };
+		AD4B2308124E4970B21901E4 /* PowerModeSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerModeSettingsTests.swift; sourceTree = "<group>"; };
+		AD4B2308124E4970B21901E6 /* DashboardPowerModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPowerModeTests.swift; sourceTree = "<group>"; };
 		A334296EBCE8F701D2C949E7 /* EphemeralTmuxServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EphemeralTmuxServerTests.swift; sourceTree = "<group>"; };
 		7206FBE1BE471C500E326C6A /* EphemeralTmuxServerSweeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EphemeralTmuxServerSweeper.swift; sourceTree = "<group>"; };
 		D25D06E42DAB35E319B75A27 /* DashboardLayoutStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardLayoutStoreTests.swift; sourceTree = "<group>"; };
@@ -2544,6 +2550,8 @@
 		11AC34F8912DA80C6DF2524F /* HeelerTests */ = {
 			isa = PBXGroup;
 			children = (
+				AD4B2308124E4970B21901E4 /* PowerModeSettingsTests.swift */,
+				AD4B2308124E4970B21901E6 /* DashboardPowerModeTests.swift */,
 				A334296EBCE8F701D2C949E7 /* EphemeralTmuxServerTests.swift */,
 				D25D06E42DAB35E319B75A27 /* DashboardLayoutStoreTests.swift */,
 				A8CFADE255E1F943BC2DCED5 /* AgentActivityContentBuilderTests.swift */,
@@ -4078,6 +4086,7 @@
 		E8F5B9516C3E10514EEF94EC /* Settings */ = {
 			isa = PBXGroup;
 			children = (
+				AD4B2308124E4970B21901E2 /* PowerModeSettings.swift */,
 				2782D0CCB8DD0CC97AF6932C /* AcknowledgementsView.swift */,
 				E295975DC35FDF1E786ADF86 /* AgentDetailSurfaceSettings.swift */,
 				F641C391CC59D30055B5F85F /* AgentInputModeSettings.swift */,
@@ -4426,6 +4435,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD4B2308124E4970B21901E1 /* PowerModeSettings.swift in Sources */,
 				A835C334EF106D396ECD74E6 /* EphemeralTmuxServerSweeper.swift in Sources */,
 				C7D88E45AEACD34CC16163DA /* DashboardTileContent.swift in Sources */,
 				3DA355EFED173EF99CEFC6EE /* DashboardLayoutStore.swift in Sources */,
@@ -5080,6 +5090,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AD4B2308124E4970B21901E3 /* PowerModeSettingsTests.swift in Sources */,
+				AD4B2308124E4970B21901E5 /* DashboardPowerModeTests.swift in Sources */,
 				EE05DAE9480FE3802A2BEA46 /* EphemeralTmuxServerTests.swift in Sources */,
 				50EC8DEA4EDDDACA860C8D27 /* DashboardLayoutStoreTests.swift in Sources */,
 				1BEAD980FB59182C1809FEDB /* ANSIScreenDecoderTests.swift in Sources */,

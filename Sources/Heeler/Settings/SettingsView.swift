@@ -212,6 +212,22 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Mode", selection: Binding(
+                        get: { console.powerSettings.mode },
+                        set: { console.setPowerMode($0) }
+                    )) {
+                        Text("Performance").tag(AppPowerMode.performance)
+                        Text("Battery Economy").tag(AppPowerMode.batteryEconomy)
+                    }
+                    .pickerStyle(.inline)
+                    .accessibilityIdentifier("settings.powerMode")
+                } header: {
+                    Text("Performance & Battery")
+                } footer: {
+                    Text("Performance keeps more dashboard previews live and view-only terminals ready for faster switching. Battery Economy pauses hidden view-only terminals and refreshes previews less often. Returning to a terminal may take longer.")
+                }
+
+                Section {
                     Toggle(isOn: Binding(
                         get: { console.isUsageEnabled },
                         set: { console.setUsageEnabled($0) }

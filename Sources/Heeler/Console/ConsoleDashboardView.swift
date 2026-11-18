@@ -65,6 +65,7 @@ struct ConsoleDashboardView: View {
     @State private var attempts: [ConsoleTerminal.ID: Int] = [:]
     /// The cell open in the full-screen viewer.
     @State private var viewing: DashboardViewing?
+    @State private var visibleCellIDs: Set<ConsoleTerminal.ID> = []
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -288,20 +289,45 @@ struct ConsoleDashboardView: View {
     /// Live up to each Host's share of the budget, top to bottom; a Herdr TUI
     /// Host never, since its attach takes the Pane over.
     private func cellModes(order: [ConsoleTerminal.ID]) -> [ConsoleTerminal.ID: CellMode] {
-        var used: [Host.ID: Int] = [:]
+        let previewOnlyHosts = Set(hosts.consoleHosts.filter { $0.serverKind == .herdrTUI }.map(\.id))
+        let liveIDs = Self.liveCellIDs(
+            order: order, visible: visibleCellIDs, previewOnlyHosts: previewOnlyHosts,
+            mode: console.powerSettings.mode)
         var modes: [ConsoleTerminal.ID: CellMode] = [:]
         for id in order {
-            let kind = hosts.consoleHosts.first { $0.id == id.hostID }?.serverKind
-            if kind == .herdrTUI {
+            if previewOnlyHosts.contains(id.hostID) {
                 modes[id] = .snapshot(note: String(localized: "Preview"))
-            } else if used[id.hostID, default: 0] < Self.liveCellsPerHost {
-                used[id.hostID, default: 0] += 1
+            } else if liveIDs.contains(id) {
                 modes[id] = .live
             } else {
                 modes[id] = .snapshot(note: String(localized: "Preview · live limit"))
             }
         }
         return modes
+    }
+
+    /// Economy spends the live budget on visible cells; hidden cells cannot
+    /// reserve all of a Host's slots above the viewport.
+    static func liveCellIDs(
+        order: [ConsoleTerminal.ID], visible: Set<ConsoleTerminal.ID>,
+        previewOnlyHosts: Set<Host.ID>, mode: AppPowerMode
+    ) -> Set<ConsoleTerminal.ID> {
+        var used: [Host.ID: Int] = [:]
+        var result: Set<ConsoleTerminal.ID> = []
+        for id in order {
+            guard !previewOnlyHosts.contains(id.hostID),
+                mode == .performance || visible.contains(id),
+                used[id.hostID, default: 0] < mode.dashboardLiveCellsPerHost
+            else { continue }
+            if result.insert(id).inserted { used[id.hostID, default: 0] += 1 }
+        }
+        return result
+    }
+
+    static func shouldRunCell(
+        mode: AppPowerMode, isVisible: Bool, isCovered: Bool, isBackground: Bool
+    ) -> Bool {
+        !isBackground && (mode == .performance || (isVisible && !isCovered))
     }
 
     private func cell(
@@ -319,6 +345,7 @@ struct ConsoleDashboardView: View {
                 .onTapGesture { viewing = DashboardViewing(id: item.id) }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityHint("Opens full screen")
+                .accessibilityAction { viewing = DashboardViewing(id: item.id) }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -331,11 +358,21 @@ struct ConsoleDashboardView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.cell")
+        .onScrollVisibilityChange(threshold: 0.01) { isVisible in
+            if isVisible {
+                visibleCellIDs.insert(item.id)
+            } else {
+                visibleCellIDs.remove(item.id)
+            }
+        }
     }
 
     @ViewBuilder
     private func cellBody(_ item: ConsoleTerminal, mode: CellMode, fit: DashboardLiveTerminal.Fit) -> some View {
-        if scenePhase == .background {
+        if !Self.shouldRunCell(
+            mode: console.powerSettings.mode, isVisible: visibleCellIDs.contains(item.id),
+            isCovered: viewing != nil, isBackground: scenePhase == .background)
+        {
             DashboardTileMessage(text: String(localized: "Paused"), showsProgress: false)
         } else {
             switch mode {
@@ -344,7 +381,8 @@ struct ConsoleDashboardView: View {
                 let runner = console.terminalRunner(for: item.hostID)
                 let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
                 DashboardLiveTerminal(
-                    terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows, fit: fit,
+                    terminal: terminal, powerSettings: console.powerSettings,
+                    remoteColumns: item.gridColumns, remoteRows: item.gridRows, fit: fit,
                     onReconnect: { attempts[item.id, default: 0] += 1 },
                     makeStore: {
                         AttachTerminalStore(
@@ -565,11 +603,12 @@ struct DashboardFullScreenView: View {
                     let runner = console.terminalRunner(for: item.hostID)
                     let target: TerminalAttachTarget = item.isAgent ? .agentPane(item.paneID) : .terminal(item.terminalID)
                     DashboardLiveTerminal(
-                        terminal: terminal, remoteColumns: item.gridColumns, remoteRows: item.gridRows,
+                        terminal: terminal, powerSettings: console.powerSettings,
+                        remoteColumns: item.gridColumns, remoteRows: item.gridRows,
                         fit: .widthFromBottom,
                         // In place it is a locked detail: pooled, so going back is instant.
                         pooled: onClose == nil
-                            ? ViewOnlyPool.shared.state(for: .init(id: item.id, generation: generation, attempt: attempt))
+                            ? console.viewOnlyPool.state(for: .init(id: item.id, generation: generation, attempt: attempt))
                             : nil,
                         onReconnect: { attempt += 1 },
                         makeStore: {

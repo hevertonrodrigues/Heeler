@@ -21,6 +21,7 @@ struct DashboardLiveTerminal: View {
 
     var fit: Fit = .whole
     let terminal: TerminalSettings
+    let powerSettings: PowerModeSettings
     let remoteColumns: Int?
     let remoteRows: Int?
     /// Recreates the Attach; a `retry()` would come back interactive.
@@ -31,6 +32,9 @@ struct DashboardLiveTerminal: View {
     /// so going back to it is instant; nil keeps it here, for a cell.
     private let pooled: LiveTerminalState?
     @State private var ownState = LiveTerminalState()
+    @State private var visibilityOwner = UUID()
+    @State private var isPresented = false
+    @Environment(\.scenePhase) private var scenePhase
     private var state: LiveTerminalState { pooled ?? ownState }
     @Environment(\.themeAppearance) private var themeAppearance
 
@@ -43,13 +47,14 @@ struct DashboardLiveTerminal: View {
     private static let maximumScale: CGFloat = 1.5
 
     init(
-        terminal: TerminalSettings, remoteColumns: Int?, remoteRows: Int?,
+        terminal: TerminalSettings, powerSettings: PowerModeSettings, remoteColumns: Int?, remoteRows: Int?,
         fit: Fit = .whole, pooled: LiveTerminalState? = nil,
         onReconnect: @escaping () -> Void, makeStore: @escaping () -> AttachTerminalStore
     ) {
         self.pooled = pooled
         self.fit = fit
         self.terminal = terminal
+        self.powerSettings = powerSettings
         self.remoteColumns = remoteColumns
         self.remoteRows = remoteRows
         self.onReconnect = onReconnect
@@ -84,6 +89,7 @@ struct DashboardLiveTerminal: View {
                             alignment: fit == .widthFromBottom && drawn.height > proxy.size.height ? .bottom : .center)
                 } else {
                     screen(store)
+                        .id(state.storeGeneration)
                 }
             }
         }
@@ -91,21 +97,35 @@ struct DashboardLiveTerminal: View {
         .allowsHitTesting(false)
         .overlay { statusOverlay }
         .onAppear {
-            if state.store == nil { state.store = makeStore() }
-            state.watch(remoteGrid.map { "\($0.columns)x\($0.rows)" }, makeStore: makeStore)
+            isPresented = true
+            updateVisibility()
         }
-        .onChange(of: remoteGrid) { _, grid in
-            // The remote Pane resized: converge on its new grid, and once the
-            // drag settles reattach, so the first paint lands at that size
-            // instead of output drawn for the old one.
-            state.watch(grid.map { "\($0.columns)x\($0.rows)" }, makeStore: makeStore)
+        .onChange(of: remoteGrid) { _, _ in
+            updateVisibility()
+        }
+        .onChange(of: powerSettings.mode) { _, _ in
+            updateVisibility()
+        }
+        .onChange(of: scenePhase) { _, _ in
+            updateVisibility()
         }
         .onDisappear {
-            // A pooled one keeps watching offscreen, as the Agent screens' own
-            // retained connections do.
-            guard pooled == nil else { return }
-            state.stop()
+            isPresented = false
+            updateVisibility()
         }
+    }
+
+    private func updateVisibility() {
+        // An inactive iPad window can still be visible beside another app.
+        // Each mounted consumer has its own owner: hiding one window must
+        // not stop an observer another window is still using.
+        // Performance preserves the original eager startup, including a
+        // mounted view whose scene has not reported foreground activity yet.
+        let visible = isPresented && (powerSettings.mode == .performance || scenePhase != .background)
+        state.setVisible(
+            visible, owner: visibilityOwner,
+            retainWhenHidden: powerSettings.mode == .performance && (pooled != nil || isPresented),
+            grid: remoteGrid.map { "\($0.columns)x\($0.rows)" }, makeStore: makeStore)
     }
 
     private func screen(_ store: AttachTerminalStore) -> TerminalScreenView {
@@ -172,21 +192,29 @@ struct DashboardLiveTerminal: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch state.store?.status ?? .waitingForSize {
-        case .waitingForSize, .connecting:
-            DashboardTileMessage(text: String(localized: "Connecting…"), showsProgress: true)
-        case .reconnecting, .restarting:
-            DashboardTileMessage(text: String(localized: "Reconnecting…"), showsProgress: true)
-        case .finished:
-            DashboardTileMessage(text: String(localized: "The program exited."), showsProgress: false)
-        case .ended(let message):
-            DashboardTileMessage(text: message, showsProgress: false) {
-                Button("Reconnect", systemImage: "arrow.clockwise", action: onReconnect)
+        if state.isAtCapacity {
+            DashboardTileMessage(text: String(localized: "Close another live viewer to preview this terminal."), showsProgress: false) {
+                Button("Retry", systemImage: "arrow.clockwise", action: onReconnect)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
-        case .live, .stopped:
-            EmptyView()
+        } else {
+            switch state.store?.status ?? .waitingForSize {
+            case .waitingForSize, .connecting:
+                DashboardTileMessage(text: String(localized: "Connecting…"), showsProgress: true)
+            case .reconnecting, .restarting:
+                DashboardTileMessage(text: String(localized: "Reconnecting…"), showsProgress: true)
+            case .finished:
+                DashboardTileMessage(text: String(localized: "The program exited."), showsProgress: false)
+            case .ended(let message):
+                DashboardTileMessage(text: message, showsProgress: false) {
+                    Button("Reconnect", systemImage: "arrow.clockwise", action: onReconnect)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            case .live, .stopped:
+                EmptyView()
+            }
         }
     }
 }
@@ -203,6 +231,20 @@ struct DashboardSnapshotTerminal: View {
 
     @State private var lines: [String] = []
     @State private var failure: String?
+    @Environment(\.scenePhase) private var scenePhase
+
+    private struct RefreshID: Equatable {
+        let hostID: Host.ID
+        let paneID: String
+        let mode: AppPowerMode
+        let paused: Bool
+    }
+
+    private var refreshID: RefreshID {
+        RefreshID(
+            hostID: hostID, paneID: paneID, mode: console.powerSettings.mode,
+            paused: console.powerSettings.mode == .batteryEconomy && scenePhase == .background)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -235,19 +277,26 @@ struct DashboardSnapshotTerminal: View {
                     showsProgress: failure == nil && isAgent)
             }
         }
-        .task(id: paneID) {
-            guard isAgent else { return }
+        .task(id: refreshID) {
+            let refresh = refreshID
+            guard isAgent, !refresh.paused else { return }
             while !Task.isCancelled {
                 do {
                     let screen = try await console.readAgentScreen(paneID, on: hostID)
+                    try Task.checkCancellation()
                     lines = screen.rows.map(\.text)
                     failure = nil
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard !Task.isCancelled else { return }
                     failure = error.localizedDescription
                 }
-                try? await Task.sleep(for: .seconds(3))
+                do {
+                    try await Task.sleep(for: refresh.mode.dashboardPreviewInterval)
+                } catch {
+                    return
+                }
             }
         }
     }
@@ -368,6 +417,7 @@ struct ViewOnlyDetail: View {
 @Observable
 final class LiveTerminalState {
     var store: AttachTerminalStore?
+    private(set) var isAtCapacity = false
     @ObservationIgnored let retention = TerminalSurfaceRetention()
     /// The fixed size the terminal lays out at, converging on the remote grid.
     var canvas: CGSize?
@@ -377,6 +427,56 @@ final class LiveTerminalState {
     var storeGeneration = 0
     @ObservationIgnored private var grid: String?
     @ObservationIgnored private var settleTask: Task<Void, Never>?
+    private struct VisibleOwner {
+        let grid: String?
+        let makeStore: () -> AttachTerminalStore
+        let revision: UInt64
+    }
+
+    @ObservationIgnored private var visibleOwners: [UUID: VisibleOwner] = [:]
+    @ObservationIgnored private var visibilityRevision: UInt64 = 0
+    @ObservationIgnored private var stoppingStores: [AttachTerminalStore] = []
+    @ObservationIgnored private var stopTask: Task<Void, Never>?
+    @ObservationIgnored var visibilityDidChange: (() -> Void)?
+    @ObservationIgnored var admitObserver: (() -> Bool)?
+
+    var hasVisibleOwners: Bool { !visibleOwners.isEmpty }
+
+    /// A lease belongs to one mounted view. Releasing one consumer must not
+    /// end the shared observer while another consumer still owns its stream.
+    func setVisible(
+        _ visible: Bool, owner: UUID, retainWhenHidden: Bool,
+        grid: String?, makeStore: @escaping () -> AttachTerminalStore
+    ) {
+        if visible {
+            visibilityRevision &+= 1
+            visibleOwners[owner] = VisibleOwner(grid: grid, makeStore: makeStore, revision: visibilityRevision)
+            resumeIfVisible()
+            if store != nil { watch(grid, makeStore: makeStore) }
+        } else {
+            visibleOwners[owner] = nil
+            if !hasVisibleOwners, !retainWhenHidden { stop() }
+        }
+        visibilityDidChange?()
+    }
+
+    func stopIfHidden() {
+        if !hasVisibleOwners { stop() }
+    }
+
+    /// Console transitions can finish after the view's foreground callback.
+    /// Recover from a queued suspension without waiting for another scene
+    /// change. Only owners still on screen retain a restart factory.
+    func resumeIfVisible() {
+        guard store == nil, let owner = visibleOwners.values.max(by: { $0.revision < $1.revision }) else { return }
+        guard admitObserver?() ?? true else {
+            isAtCapacity = true
+            return
+        }
+        isAtCapacity = false
+        store = owner.makeStore()
+        watch(owner.grid, makeStore: owner.makeStore)
+    }
 
     /// The remote grid now: a change reattaches once it has held still.
     func watch(_ grid: String?, makeStore: @escaping () -> AttachTerminalStore) {
@@ -391,26 +491,49 @@ final class LiveTerminalState {
             guard let self, !Task.isCancelled, let previous = self.store else { return }
             self.store = makeStore()
             self.storeGeneration += 1
-            await previous.stop()
+            self.settleTask = nil
+            self.enqueueStop(previous)
         }
     }
 
     func stop() {
+        isAtCapacity = false
         settleTask?.cancel()
+        settleTask = nil
+        grid = nil
+        canvas = nil
+        fitPasses = 0
         retention.clear()
         guard let store else { return }
         self.store = nil
-        Task { await store.stop() }
+        storeGeneration += 1
+        // Presence is advisory; ending this observe Attach is what also
+        // stops output on transports without hidden-viewer support. It never
+        // sends input, resizes a Pane, or ends the remote program.
+        store.setViewed(false)
+        enqueueStop(store)
+    }
+
+    private func enqueueStop(_ store: AttachTerminalStore) {
+        stoppingStores.append(store)
+        guard stopTask == nil else { return }
+        // One cleanup worker per state, including rapid show/hide or resize
+        // sequences. Teardown must finish even when the view has disappeared.
+        stopTask = Task { @MainActor in
+            while !self.stoppingStores.isEmpty {
+                let store = self.stoppingStores.removeFirst()
+                await store.stop()
+            }
+            self.stopTask = nil
+        }
     }
 }
 
-/// The last few locked details per Host, kept watching offscreen so going
-/// back to one shows it at once (personal build). Each is an observe
-/// Attach, which never sizes the Pane.
+/// The last few locked details per Host. Performance keeps their observe
+/// Attaches watching offscreen; Battery Economy ends an observer as soon as
+/// its last visible consumer leaves. Neither mode sizes the remote Pane.
 @MainActor
 final class ViewOnlyPool {
-    static let shared = ViewOnlyPool()
-
     struct Key: Hashable {
         let id: ConsoleTerminal.ID
         let generation: UInt64?
@@ -422,6 +545,31 @@ final class ViewOnlyPool {
 
     /// Most recent last.
     private var entries: [(key: Key, state: LiveTerminalState)] = []
+    private var powerMode: AppPowerMode = .performance
+
+    func applyPowerMode(_ mode: AppPowerMode) {
+        powerMode = mode
+        guard mode == .batteryEconomy else { return }
+        for entry in entries { entry.state.stopIfHidden() }
+    }
+
+    /// Called after the Console suspends its transports. Visible leases stay
+    /// registered so their view can reopen a fresh surface on foregrounding.
+    func suspend() {
+        guard powerMode == .batteryEconomy else { return }
+        for entry in entries { entry.state.stop() }
+    }
+
+    /// Restore visible observers even if the user changed modes while a
+    /// suspension was queued. Hidden entries never retain a restart lease.
+    func resume() {
+        for entry in entries { entry.state.resumeIfVisible() }
+    }
+
+    func removeHost(_ id: Host.ID) {
+        for entry in entries where entry.key.id.hostID == id { entry.state.stop() }
+        entries.removeAll { $0.key.id.hostID == id }
+    }
 
     func state(for key: Key) -> LiveTerminalState {
         if let index = entries.firstIndex(where: { $0.key == key }) {
@@ -433,12 +581,42 @@ final class ViewOnlyPool {
         for stale in entries where stale.key.id == key.id { stale.state.stop() }
         entries.removeAll { $0.key.id == key.id }
         let state = LiveTerminalState()
+        state.admitObserver = { [weak self, weak state] in
+            guard let self, let state else { return false }
+            return self.admit(state, for: key)
+        }
+        state.visibilityDidChange = { [weak self] in
+            self?.prune(on: key.id.hostID)
+        }
         entries.append((key, state))
-        let onHost = entries.filter { $0.key.id.hostID == key.id.hostID }
-        for old in onHost.dropLast(Self.perHost) {
+        prune(on: key.id.hostID, protecting: key)
+        return state
+    }
+
+    /// Reserve at the moment a view starts its observer, not during body
+    /// evaluation: several views can request states before any appears.
+    private func admit(_ state: LiveTerminalState, for key: Key) -> Bool {
+        guard entries.contains(where: { $0.key == key && $0.state === state }) else { return false }
+        let others = entries.filter { $0.key.id.hostID == key.id.hostID && $0.state !== state && $0.state.store != nil }
+        var occupied = others.count
+        for old in others where occupied >= Self.perHost && !old.state.hasVisibleOwners {
+            old.state.stop()
+            occupied -= 1
+        }
+        return occupied < Self.perHost
+    }
+
+    private func prune(on hostID: Host.ID, protecting key: Key? = nil) {
+        let onHost = entries.filter { $0.key.id.hostID == hostID }
+        var excess = onHost.count - Self.perHost
+        // Visible windows own their observers. Evict the oldest hidden entry
+        // first; a view mounting a newly requested state is protected too.
+        // Recheck on release so several windows cannot leave an oversized
+        // hidden cache after they close.
+        for old in onHost where excess > 0 && old.key != key && !old.state.hasVisibleOwners {
             old.state.stop()
             entries.removeAll { $0.key == old.key }
+            excess -= 1
         }
-        return state
     }
 }
